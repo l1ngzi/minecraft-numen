@@ -4,6 +4,7 @@ import com.dwinovo.numen.agent.provider.AnthropicProvider;
 import com.dwinovo.numen.agent.provider.DeepSeekProvider;
 import com.dwinovo.numen.agent.provider.LlmProvider;
 import com.dwinovo.numen.agent.provider.MoonshotProvider;
+import com.dwinovo.numen.agent.provider.MimoProvider;
 import com.dwinovo.numen.agent.provider.OpenAIProvider;
 import org.junit.jupiter.api.Test;
 
@@ -25,6 +26,7 @@ class PickProviderTest {
         assertInstanceOf(DeepSeekProvider.class, NumenLlmClient.pickProvider("deepseek"));
         assertInstanceOf(MoonshotProvider.class, NumenLlmClient.pickProvider("kimi"));
         assertInstanceOf(MoonshotProvider.class, NumenLlmClient.pickProvider("moonshot"));
+        assertInstanceOf(MimoProvider.class, NumenLlmClient.pickProvider(MimoProvider.NAME));
     }
 
     @Test

@@ -14,6 +14,7 @@ import com.dwinovo.numen.agent.provider.IToolSpec;
 import com.dwinovo.numen.agent.provider.LlmProvider;
 import com.dwinovo.numen.agent.provider.LlmToolCall;
 import com.dwinovo.numen.agent.provider.MoonshotProvider;
+import com.dwinovo.numen.agent.provider.MimoProvider;
 import com.dwinovo.numen.agent.provider.OpenAIProvider;
 import com.dwinovo.numen.agent.provider.StreamAccumulator;
 import com.google.gson.JsonArray;
@@ -286,7 +287,7 @@ public final class NumenLlmClient {
      *
      * <p>Only backends with genuine behavioural differences get a subclass
      * (DeepSeek's cache billing, Moonshot's {@code reasoning_content}
-     * fallback). Every other site — zhipu, siliconflow, minimax, volcengine,
+     * fallback, MiMo's optional primitive tool arguments). Every other site — zhipu, siliconflow, minimax, volcengine,
      * dashscope, gemini, grok, "+ add site" customs — is a plain
      * OpenAI-compatible endpoint whose name and default base URL come from
      * {@code numen_providers.json} ({@link ProviderRegistry}), the single source
@@ -301,6 +302,7 @@ public final class NumenLlmClient {
         String id = ProviderRegistry.canonicalId(name);
         if (id.equals(DeepSeekProvider.NAME)) return new DeepSeekProvider();
         if (id.equals(MoonshotProvider.NAME)) return new MoonshotProvider();
+        if (id.equals(MimoProvider.NAME)) return new MimoProvider();
         if (id.equals(OpenAIProvider.NAME)) return new OpenAIProvider();
         if (id.equals(OpenAIResponsesProvider.NAME)) return new OpenAIResponsesProvider();
         if (ProviderRegistry.has(id)) {

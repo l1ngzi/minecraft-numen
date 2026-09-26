@@ -11,6 +11,13 @@
       ]
     },
     {
+      "id": "mimo-token-plan-cn", "name": "小米 MiMo Token Plan（中国区）", "baseUrl": "https://token-plan-cn.xiaomimimo.com/v1", "thinkingFormat": "thinking-type",
+      "models": [
+        { "id": "mimo-v2.6-flash", "ctx": 1000000, "reasoning": true },
+        { "id": "mimo-v2.6-pro", "ctx": 1000000, "reasoning": true }
+      ]
+    },
+    {
       "id": "anthropic", "name": "Anthropic", "baseUrl": "https://api.anthropic.com/v1", "protocol": "anthropic", "thinkingFormat": "budget",
       "models": [
         { "id": "claude-opus-4-5", "ctx": 200000, "reasoning": true },
