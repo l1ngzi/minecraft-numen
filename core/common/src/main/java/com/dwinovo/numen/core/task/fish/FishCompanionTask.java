@@ -5,6 +5,8 @@ import com.dwinovo.numen.core.Constants;
 import com.dwinovo.numen.core.mixin.FishingHookAccessor;
 import com.dwinovo.numen.core.pathing.calc.NavGoal;
 import com.dwinovo.numen.core.pathing.execute.PlayerNav;
+import com.dwinovo.numen.core.pathing.spec.CellClass;
+import com.dwinovo.numen.core.pathing.spec.RouteSpec;
 import com.dwinovo.numen.core.pathing.util.BlockHelper;
 import com.dwinovo.numen.core.task.base.AbstractCompanionTask;
 import com.dwinovo.numen.core.task.base.Precondition;
@@ -64,6 +66,7 @@ public final class FishCompanionTask extends AbstractCompanionTask<FishTaskRecor
     /** Let vanilla's reel impulse bring the catch back before chasing it. */
     private static final int LOOT_RETURN_GRACE_TICKS = 20;
     private static final int LOOT_CLOSE_WAIT_TICKS = 20;
+    /** 收战果最多干这么多刻的活({@link #workTicks()}):等寻路规划的刻不算,那段时间长短看机器快慢。 */
     private static final int LOOT_COLLECTION_TIMEOUT = 20 * 20;
 
     private static final double FISHING_DRAG = 0.92;
@@ -87,6 +90,8 @@ public final class FishCompanionTask extends AbstractCompanionTask<FishTaskRecor
     private ItemEntity lootTarget;
     private int lootCloseTicks;
     private int unreachableLoot;
+    /** 开始收这一竿战果时的 {@link #workTicks()}。 */
+    private long lootSince;
 
     public FishCompanionTask(NumenPlayer player, FishTaskRecord record) {
         super(player, record);
@@ -308,7 +313,7 @@ public final class FishCompanionTask extends AbstractCompanionTask<FishTaskRecor
         phaseTicks++;
         if (phaseTicks <= LOOT_DISCOVERY_TICKS) caught.discover(player.level(), lootBox());
 
-        if (phaseTicks >= LOOT_COLLECTION_TIMEOUT) {
+        if (workTicks() - lootSince >= LOOT_COLLECTION_TIMEOUT) {
             int remaining = liveCaught().size();
             fail("reeled in fishing loot but timed out while retrieving " + remaining
                     + " dropped loot item(s)", FailureType.NO_PATH);
@@ -386,6 +391,7 @@ public final class FishCompanionTask extends AbstractCompanionTask<FishTaskRecor
         reelIn();
         phase = Phase.COLLECT;
         phaseTicks = 0;
+        lootSince = workTicks();
         stopNav();
         caught.discover(player.level(), lootBox());
     }
@@ -527,9 +533,9 @@ public final class FishCompanionTask extends AbstractCompanionTask<FishTaskRecor
     private boolean isDryStance(BlockPos pos) {
         return player.level().getFluidState(pos).isEmpty()
                 && player.level().getFluidState(pos.above()).isEmpty()
-                && BlockHelper.canWalkThrough(player.level(), pos)
-                && BlockHelper.canWalkThrough(player.level(), pos.above())
-                && BlockHelper.canWalkOn(player.level(), pos.below());
+                && CellClass.canWalkThrough(player.level(), pos, RouteSpec.defaults())
+                && CellClass.canWalkThrough(player.level(), pos.above(), RouteSpec.defaults())
+                && CellClass.canWalkOn(player.level(), pos.below(), RouteSpec.defaults());
     }
 
     private boolean atStance() {

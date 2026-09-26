@@ -7,9 +7,7 @@ import java.util.EnumMap;
 import com.dwinovo.numen.core.act.BlockDigger;
 import com.dwinovo.numen.core.pathing.moves.Input;
 import com.dwinovo.numen.core.pathing.moves.Movement;
-import com.dwinovo.numen.core.pathing.moves.MovementHelper;
 import com.dwinovo.numen.core.pathing.moves.MovementState;
-import com.dwinovo.numen.core.pathing.moves.TerrainPermit;
 import com.dwinovo.numen.core.pathing.settings.NavSettings;
 import com.dwinovo.numen.entity.InputDriver;
 import com.dwinovo.numen.entity.NumenPlayer;
@@ -59,8 +57,6 @@ public final class ExecHarness implements Movement.ExecutionDelegate {
     private final NumenPlayer player;
     private final AimProcessor aim;
     private final BlockDigger digger;
-    /** 这次导航对地形的许可(与搜索/执行上下文同一来源:PlayerNav 的 ContextProvider)。 */
-    private final TerrainPermit permit;
     /**
      * 这次导航真挖了什么、真放了什么。执行器是唯一动手的地方,账也只记在这儿:
      * 任务回执末尾如实相告(en route: broke …; placed …),模型事后至少知道自己干过什么。
@@ -79,16 +75,10 @@ public final class ExecHarness implements Movement.ExecutionDelegate {
     /** 本 tick 是否有任何记录待落地。 */
     private boolean dirty;
 
-    public ExecHarness(NumenPlayer player, TerrainPermit permit) {
+    public ExecHarness(NumenPlayer player) {
         this.player = player;
-        this.permit = permit;
         this.aim = new AimProcessor();
         this.digger = new BlockDigger(player);
-    }
-
-    @Override
-    public TerrainPermit permit() {
-        return permit;
     }
 
     /** 这次导航至今真动过的地形(只读视图;空账 = 一块没动)。 */
@@ -183,6 +173,31 @@ public final class ExecHarness implements Movement.ExecutionDelegate {
         return digger.current() != null;
     }
 
+    /** 挖掘落点最近一次被权限层拒绝的说法;没有是 null。 */
+    private String refusal;
+
+    /**
+     * 一刻挖掘的结果进账:挖穿了记实际账——记挖掘器说真挖掉的那一格(挡在前面的遮挡物也是她挖的,不是瞄准的
+     * 那格);被权限层拒绝记下说法,由执行器当场收场这一段。
+     */
+    private void noteDig(BlockDigger.DigResult result, BlockPos pos) {
+        if (result.broke()) {
+            BlockDigger.Broken broken = digger.lastBroken();
+            ledger.addBreak(broken.pos(), broken.was());
+        } else if (result == BlockDigger.DigResult.REFUSED) {
+            BlockState state = player.level().getBlockState(pos);
+            refusal = "breaking " + net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock())
+                    .getPath() + " at " + pos.toShortString() + " was refused: " + digger.refusal().reason();
+        }
+    }
+
+    /** 取走挖掘落点的拒绝说法(取一次清一次);没有是 null。 */
+    public String takeRefusal() {
+        String taken = refusal;
+        refusal = null;
+        return taken;
+    }
+
     /** 视角步进量化器(执行器做放置预判时共用同一套数学)。 */
     public AimProcessor aimProcessor() {
         return aim;
@@ -244,20 +259,14 @@ public final class ExecHarness implements Movement.ExecutionDelegate {
                     // 重挖——任由它抖,两格谁都永远挖不穿。已在挖的格子还实心、准星
                     // 只是滑到紧邻格(仍看着原目标方向)时,继续挖原目标不换靶;挖穿
                     // 或目标失效后自然跟随准星。
-                    BlockState was = player.level().getBlockState(cur);
-                    if (digger.digStep(cur).broke()) {
-                        ledger.addBreak(cur, was);
-                    }
+                    noteDig(digger.digStep(cur), cur);
                 } else {
                     if (!hit.getBlockPos().equals(cur)) {
                         com.dwinovo.numen.core.Constants.LOG.debug("[numen-path] exec dig {} ({})",
                                 hit.getBlockPos().toShortString(),
                                 player.level().getBlockState(hit.getBlockPos()).getBlock());
                     }
-                    BlockState was = player.level().getBlockState(hit.getBlockPos());
-                    if (digger.digStep(hit).broke()) {
-                        ledger.addBreak(hit.getBlockPos(), was);
-                    }
+                    noteDig(digger.digStep(hit), hit.getBlockPos());
                 }
                 digTicked = true;
             } else if (digger.current() != null) {
@@ -341,9 +350,16 @@ public final class ExecHarness implements Movement.ExecutionDelegate {
         rightClickCooldown = NavSettings.get().rightClickSpeed - 1;
         // 放置落点 = 命中面前方那格(贴面放置);开门/交互不会让它从可替换变成实心
         BlockPos placeAt = hit.getBlockPos().relative(hit.getDirection());
-        boolean emptyBefore = level.getBlockState(placeAt).canBeReplaced();
+        BlockState before = level.getBlockState(placeAt);
+        boolean emptyBefore = before.canBeReplaced();
         for (InteractionHand hand : HANDS) {
             ItemStack stack = player.getItemInHand(hand);
+            // 手里的东西会往世界里放东西就是要放:放置落点先过权限层。被拒的手
+            // 不按下去——不是换一只手绕开,是这一格不许放;另一只手若也要放同样被拒。
+            var placing = com.dwinovo.numen.core.act.Interaction.placementOf(level, hit, stack);
+            if (placing != null && !com.dwinovo.numen.permission.Permission.judge(player, placing).allowed()) {
+                continue;
+            }
             if (player.gameMode.useItemOn(player, level, stack, hand, hit).consumesAction()) {
                 player.swing(hand);
                 BlockState now = level.getBlockState(placeAt);
@@ -399,11 +415,11 @@ public final class ExecHarness implements Movement.ExecutionDelegate {
         return hit != null ? hit.getBlockPos() : null;
     }
 
-    /** 沿实体当前视角的轮廓射线(不穿流体);触及距离创造 5.0/生存按设置。 */
+    /** 沿实体当前视角的轮廓射线(不穿流体),长度是原版交互距离。 */
     private BlockHitResult clipAlongView() {
         Vec3 eye = player.getEyePosition();
         Vec3 end = eye.add(player.getViewVector(1.0f)
-                .scale(AimGeometry.blockReachDistance(player)));
+                .scale(com.dwinovo.numen.platform.Services.PLATFORM.blockInteractionRange(player)));
         return player.level().clip(new ClipContext(
                 eye, end, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
     }

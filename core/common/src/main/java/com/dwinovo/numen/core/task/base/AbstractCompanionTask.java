@@ -8,8 +8,16 @@ import com.dwinovo.numen.core.FailureType;
 import com.dwinovo.numen.task.TaskRecord;
 import com.dwinovo.numen.task.TaskState;
 import com.dwinovo.numen.entity.NumenPlayer;
+import com.dwinovo.numen.permission.Action;
+import com.dwinovo.numen.permission.ConsentAnswer;
+import com.dwinovo.numen.permission.ConsentDesk;
+import com.dwinovo.numen.permission.ConsentItem;
+import com.dwinovo.numen.permission.Permission;
+import com.dwinovo.numen.permission.Verdict;
 import com.dwinovo.numen.task.TaskResult;
+import net.minecraft.core.BlockPos;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -84,6 +92,16 @@ public abstract class AbstractCompanionTask<R extends TaskRecord>
      */
     private TaskState pendingTerminal;
 
+    /** 在等主人答复的那张号;没在问是 null。 */
+    private ConsentDesk.Ticket consent;
+    /** 主人点头的那几次,回执末尾交代。 */
+    private final List<String> allowances = new ArrayList<>();
+
+    /** 身体真在干活的刻数,见 {@link #workTicks()}。 */
+    private long workTicks;
+    /** 这一刻任务说它在等一次后台搜索({@link #awaitSearch});每刻开头清掉。 */
+    private boolean awaitingSearch;
+
     // ---- sub-task composition state (see runChild) ----
     /** The child sub-goal currently being delegated to, or {@code null}. */
     private Task child;
@@ -130,20 +148,178 @@ public abstract class AbstractCompanionTask<R extends TaskRecord>
     @Override
     public final TaskState tick(NumenPlayer companion) {
         if (pendingTerminal != null) return pendingTerminal;
-        // 规划器在飞、身体没有路段可走的等待刻,不烧任务预算:deadline 度量
-        // 的是身体干活的刻,异步搜索的墙钟延迟不是任务的错(与调度层被生存
-        // 链抢占时的 freezeTick 同一原则)。正常 tick 速率下一次搜索只有几刻,
-        // 这里几乎不动;tick 远快于真实时间时(如不限速的测试服),没有这道
-        // 冻结,任务会在第一次搜索返回前就被判 TIMEOUT。
-        if (nav != null && nav.planningInFlight()) {
-            r.extendDeadlineTo(r.getDeadlineGameTime() + 1);
-        }
+        awaitingSearch = false;
+        TaskState state;
         try {
-            return onTick();
+            TaskState routeConsent = awaitRouteConsent();
+            state = routeConsent != null ? routeConsent : onTick();
         } catch (RuntimeException e) {
             crashed("tick", e);
             return TaskState.FAILED;
         }
+        // 这一刻身体在等就不算干活:期限往后推一刻(与调度层被生存链抢占时的 freeze 同一原则),
+        // 干活的刻数不走。
+        if (waiting()) {
+            r.extendDeadlineTo(r.getDeadlineGameTime() + 1);
+        } else {
+            workTicks++;
+        }
+        return state;
+    }
+
+    /**
+     * 身体真在干活的刻数——任务里一切"干了多久"的量尺:超时、卡死判定、重算间隔都拿它量,不自己数刻。
+     *
+     * <p>等的刻不算:导航在等规划、在等主人答复、任务说它在等一次后台搜索。这些刻有多少取决于机器快慢
+     * (搜索在后台线程上、按每刻的时间上限分摊,花的是真实时间)和主人,而刻数跑得比真实时间快多少并不
+     * 固定——tick 远快于真实时间时(/tick rate、不限速的测试服),拿游戏刻去量等待,预算会在第一次搜索
+     * 返回前就烧光。拿这把尺子量,结论只看身体干了多少活。任务期限也是这样冻结的。
+     */
+    protected final long workTicks() {
+        return workTicks;
+    }
+
+    /** 这一刻身体站着等一次后台搜索(找方块、定位)出结论:不算干活,期限不走。每刻要等就每刻调。 */
+    protected final void awaitSearch() {
+        awaitingSearch = true;
+    }
+
+    /** 身体这一刻在等,不在干活。见 {@link #workTicks()}。 */
+    private boolean waiting() {
+        return (nav != null && nav.waiting()) || consent != null || awaitingSearch;
+    }
+
+    /**
+     * 导航扣着一段要问主人的路时,这一刻归征询:身体站住、问主人;答应了放行那段路接着跑
+     * {@link #onTick},拒绝了按 {@link FailureType#REFUSED} 收场。任何带导航的任务都一样,
+     * 不各写各的。
+     *
+     * @return 这一刻的终态或 RUNNING;不用等(没有扣着的路,或刚放行)时为 null
+     */
+    private TaskState awaitRouteConsent() {
+        if (nav == null) {
+            return null;
+        }
+        List<ConsentItem> needed = nav.consentNeeded();
+        if (needed.isEmpty()) {
+            return null;
+        }
+        InputDriver.halt(player);
+        ConsentAnswer answer = consult(needed);
+        if (answer == null) {
+            return TaskState.RUNNING;
+        }
+        if (!answer.allowed()) {
+            fail(answer.refusal(needed), FailureType.REFUSED);
+            return TaskState.FAILED;
+        }
+        nav.consentGranted();
+        return null;
+    }
+
+    // ---------------------------------------------------------------------
+    // Permission — the task proposes actions; the permission layer decides
+    // ---------------------------------------------------------------------
+
+    /** 执行开始时一个动作过权限层的结论。 */
+    protected enum PermitState { ALLOWED, WAITING, REFUSED }
+
+    /**
+     * @param state   放行 / 在等主人 / 不许
+     * @param refusal 不许时回执的理由(规则、模式、外部强制的自述,或主人的原话);其余为空串
+     */
+    protected record Permit(PermitState state, String refusal) {
+        static final Permit ALLOWED = new Permit(PermitState.ALLOWED, "");
+        static final Permit WAITING = new Permit(PermitState.WAITING, "");
+
+        static Permit refused(String why) {
+            return new Permit(PermitState.REFUSED, why);
+        }
+    }
+
+    /**
+     * 执行开始:把要做的一个动作交给权限层。放行就做;拒绝就带着理由收场;要问就发起征询,
+     * 等待期间返回 WAITING(调用方让身体站住,每刻再调),主人答应后返回 ALLOWED——同一行规则
+     * 问出来的同一种东西从此在本任务内放行,不再问。任务自己不判能不能,只提出动作。
+     */
+    protected final Permit permit(Action action) {
+        return permitAll(List.of(action)).get(0);
+    }
+
+    /**
+     * 同 {@link #permit},一批动作一起:各自裁决,要问的合成一次征询,主人的答复对这一批里要问的
+     * 全部生效。结果与 {@code actions} 一一对应。
+     */
+    protected final List<Permit> permitAll(List<Action> actions) {
+        var gate = Permission.gateFor(player);
+        List<Permit> out = new ArrayList<>(actions.size());
+        List<ConsentItem> asks = new ArrayList<>();
+        List<Integer> askedAt = new ArrayList<>();
+        for (Action action : actions) {
+            Verdict verdict = gate.judgeLive(action, player.serverLevel());
+            switch (verdict.kind()) {
+                case ALLOW -> out.add(Permit.ALLOWED);
+                case DENY -> out.add(Permit.refused(verdict.reason()));
+                case ASK -> {
+                    askedAt.add(out.size());
+                    asks.add(gate.consentItemLive(action, verdict, player.serverLevel()));
+                    out.add(Permit.WAITING);
+                }
+            }
+        }
+        if (asks.isEmpty()) {
+            settleConsult();
+            return out;
+        }
+        ConsentAnswer answer = consult(asks);
+        if (answer != null) {
+            Permit settled = answer.allowed() ? Permit.ALLOWED : Permit.refused(answer.refusal(asks));
+            for (int i : askedAt) {
+                out.set(i, settled);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 问主人一批事:第一次调用发起征询,之后每刻读结论;清单变了就重发(新的顶掉旧的)。
+     * 主人答应的清单由登记处记成本任务的授权,回执末尾交代。
+     *
+     * @return 结论;还在等是 null
+     */
+    protected final ConsentAnswer consult(List<ConsentItem> items) {
+        if (consent != null && !consent.request().items().equals(items)) {
+            consent = null;
+        }
+        if (consent == null) {
+            consent = ConsentDesk.of(player).ask(r, items);
+        }
+        ConsentAnswer answer = consent.poll();
+        if (answer == null) {
+            return null;
+        }
+        consent = null;
+        if (answer.allowed()) {
+            allowances.add(answer.allowance(items));
+        }
+        return answer;
+    }
+
+    /**
+     * 要做的事此刻不用问了:主人刚答应(授权已经让裁决变成放行)就把这次允许记进回执;
+     * 还没答复就撤回挂着的征询。
+     */
+    private void settleConsult() {
+        if (consent == null) {
+            return;
+        }
+        ConsentAnswer answer = consent.poll();
+        if (answer == null) {
+            ConsentDesk.of(player).withdraw(consent);
+        } else if (answer.allowed()) {
+            allowances.add(answer.allowance(consent.request().items()));
+        }
+        consent = null;
     }
 
     /**
@@ -172,8 +348,9 @@ public abstract class AbstractCompanionTask<R extends TaskRecord>
     @Override
     public final TaskResult result(TaskState finalState) {
         cleanup();
-        // 路上真动过的地形跟着每一种收场走:成功也好失败也罢,拆了什么就说什么
-        String enRoute = journey.isEmpty() ? "" : " En route I had to " + journey.describe() + ".";
+        // 路上真动过的地形跟着每一种收场走:成功也好失败也罢,拆了什么就说什么;主人点过头的也说
+        String enRoute = (journey.isEmpty() ? "" : " En route I had to " + journey.describe() + ".")
+                + (allowances.isEmpty() ? "" : " " + String.join("; ", allowances) + ".");
         return switch (finalState) {
             case SUCCESS   -> TaskResult.ok(successMessage() + enRoute, resultData());
             case TIMEOUT   -> new TaskResult(false, timeoutMessage() + enRoute, true, false, resultData());
@@ -260,6 +437,22 @@ public abstract class AbstractCompanionTask<R extends TaskRecord>
     // ---------------------------------------------------------------------
     // Nav ownership
     // ---------------------------------------------------------------------
+
+    /**
+     * 这件活替目标之外挖掉的一格记进旅程账(比如为了拉出射线挖掉的遮挡物)。回执末尾和导航挖的一起交代,
+     * {@link #brokeOnTheWay} 也认它。
+     */
+    protected final void recordBreak(com.dwinovo.numen.core.act.BlockDigger.Broken broken) {
+        journey.addBreak(broken.pos(), broken.was());
+    }
+
+    /**
+     * 这一格是她这件活里顺路挖掉的吗:历次导航与 {@link #recordBreak} 记下的旅程账,加上还在跑的这条导航的账。
+     * 账本是"她挖了什么"的唯一出处,任务要分清"她挖的"和"别人动的"时问这里。
+     */
+    protected final boolean brokeOnTheWay(BlockPos pos) {
+        return journey.broke(pos) || (nav != null && nav.ledger().broke(pos));
+    }
 
     /** Stop and forget the active nav (idempotent); its terrain ledger joins the task's journey. */
     protected void stopNav() {

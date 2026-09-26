@@ -20,6 +20,7 @@ public class CommonClass {
         com.dwinovo.numen.config.ConfigMigrations.run(numenDir);
 
         registerTools();
+        com.dwinovo.numen.cli.NumenCli.registerArgumentTypes();
         wireTaskMachine();
     }
 
@@ -46,16 +47,12 @@ public class CommonClass {
     }
 
     /**
-     * Populate the global {@link ToolRegistry}. The {@code numen-api} engine is a
-     * chat-only companion and registers <em>no</em> tools of its own — the
-     * registry starts empty. {@code numen-core} and third-party tool packs
-     * register their own {@link com.dwinovo.numen.agent.tool.NumenTool}s via
-     * {@link ToolRegistry#register}, in their own init.
-     *
-     * <p>Kept as an explicit (empty) hook so the engine's init flow and logging
-     * read the same whether or not any tools are present.
+     * 引擎自己只登记一个工具:{@code command},执行一行游戏指令的入口。命令组与动作是内容,由 {@code numen-core}
+     * 与插件经 {@code NumenApi.registerCommands} 登记;它们各自的工具也在各自的初始化里进 {@link ToolRegistry}。
+     * {@code command} 由引擎登记,是因为插件的命令只依赖引擎——谁登记了命令,谁都指望这个入口在。
      */
     public static void registerTools() {
+        ToolRegistry.register(new com.dwinovo.numen.cli.CommandTool());
         Constants.LOG.info("[numen] registered {} tool(s)", ToolRegistry.size());
     }
 }

@@ -38,6 +38,19 @@ public final class GuiCompat {
     private static final Map<ResourceLocation, SpriteMeta> CACHE = new ConcurrentHashMap<>();
 
     public static void blitSprite(GuiGraphics g, ResourceLocation spriteId, int x, int y, int w, int h) {
+        // 1.20.1 的心与鸡腿仍在原版 HUD 图集中;用它的 UV,不复制原版资源。
+        if (spriteId.getNamespace().equals("minecraft")) {
+            int u = switch (spriteId.getPath()) {
+                case "hud/heart/container", "hud/food_empty" -> 16;
+                case "hud/heart/full", "hud/food_full" -> 52;
+                case "hud/heart/half", "hud/food_half" -> 61;
+                default -> -1;
+            };
+            if (u >= 0) {
+                blitHudIcon(g, x, y, u, spriteId.getPath().startsWith("hud/food") ? 27 : 0, w, h);
+                return;
+            }
+        }
         ResourceLocation tex = new ResourceLocation(spriteId.getNamespace(),
                 "textures/gui/sprites/" + spriteId.getPath() + ".png");
         SpriteMeta m = CACHE.computeIfAbsent(spriteId, id -> load(tex));

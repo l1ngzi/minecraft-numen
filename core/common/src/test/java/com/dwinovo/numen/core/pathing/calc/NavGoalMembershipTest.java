@@ -1,8 +1,10 @@
 package com.dwinovo.numen.core.pathing.calc;
 
+import com.dwinovo.numen.core.pathing.moves.BlockReach;
 import net.minecraft.core.BlockPos;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -72,20 +74,36 @@ class NavGoalMembershipTest {
         assertTrue(sphere.isAt(T.above(2)), "3D sphere admits the pillar-top cell");
     }
 
-    // ---- mineColumn: stance band edges ----
+    // ---- mineStance: within block reach, feet not above ----
+
+    private static final BlockReach SURVIVAL = new BlockReach(1.62, 4.5);
 
     @Test
-    void mineColumnBandEdges() {
-        NavGoal g = NavGoal.mineColumn(T, 2);
-        assertTrue(g.isAt(T), "feet at the ore");
-        assertTrue(g.isAt(T.below()), "one below");
-        assertTrue(g.isAt(T.below(2)), "two below — band floor");
-        assertFalse(g.isAt(T.below(3)), "three below — outside the band");
-        assertFalse(g.isAt(T.above()), "above the ore is never a mining stance");
-        assertFalse(g.isAt(T.north()), "wrong column");
+    void mineStanceReachesACanopyLogFromTheGround() {
+        // 地面在 T.y - 6,原木挂在脚上五格:站在地上仰头就够得着,不必爬上去贴着它
+        BlockPos log = T.above(5);
+        NavGoal g = NavGoal.mineStance(log, SURVIVAL);
+        assertTrue(g.isAt(T), "脚上五格,眼睛离它底面 3.38 格");
+        assertTrue(g.isAt(T.east(2)), "偏开两格也够得着(3.70 格)");
+        assertFalse(g.isAt(T.east(4)), "偏开四格就够不着了");
+        assertEquals(0.0, g.heuristic(T), "站在站位里估价为 0");
+    }
 
-        NavGoal exact = NavGoal.mineColumn(T, 0);
-        assertTrue(exact.isAt(T), "exact stance: feet at the ore");
-        assertFalse(exact.isAt(T.below()), "exact stance: one below rejected");
+    @Test
+    void mineStanceHeuristicShrinksTowardTheStanceBand() {
+        NavGoal g = NavGoal.mineStance(T, SURVIVAL);
+        double far = g.heuristic(T.north(12));
+        double nearer = g.heuristic(T.north(8));
+        assertTrue(far > nearer && nearer > 0, "越走近估价越小:" + far + " > " + nearer);
+        assertEquals(0.0, g.heuristic(T.north(4)), "同一层隔三格已在站位带里");
+    }
+
+    @Test
+    void mineStanceAsksToClimbOnlyForWhatTheEyesCannotReach() {
+        NavGoal g = NavGoal.mineStance(T, SURVIVAL);
+        // 脚下七格:眼睛离它 5.38 格,差的 0.88 格全在竖直方向,要往上
+        assertEquals(0.88 * NavGoal.JUMP_ONE_BLOCK, g.heuristic(T.below(7)), 1e-9);
+        // 脚高于它:至少要落到它那一层
+        assertEquals(2 * NavGoal.DESCEND_ONE_BLOCK, g.heuristic(T.above(2)), 1e-9);
     }
 }

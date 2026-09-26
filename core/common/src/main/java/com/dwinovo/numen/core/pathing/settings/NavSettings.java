@@ -8,11 +8,15 @@ import java.util.Map;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Block;
-import net.minecraft.world.level.block.Blocks;
 
 /**
- * 地面寻路全部旋钮的集中定义:成本模型、能力开关、搜索预算、分段与执行参数。
- * 所有字段 public 可变,运行期直接改写即生效;全局单例 {@link #get()}。
+ * 地面寻路的引擎与服主参数:总开关(天花板)、搜索预算、分段与执行参数、
+ * 建造校验参数。所有字段 public 可变,运行期直接改写即生效;全局单例 {@link #get()}。
+ *
+ * <p>模型该碰的那部分——这一次导航能不能改地形、能不能跑酷、各项罚金、
+ * 每类格子的代价——不在这里,在按次传值的
+ * {@link com.dwinovo.numen.core.pathing.spec.RouteSpec};规格只能在这里的总开关
+ * 之下收紧。判据:模型会想改的是规格,服主定的上限与引擎自身的参数是设置。
  *
  * <p>方块/物品清单字段经由懒加载 getter 暴露(首次访问才触碰注册表),
  * 保证纯逻辑单测在不引导 MC 注册表的情况下也能使用其余数值字段。
@@ -27,16 +31,16 @@ public final class NavSettings {
 
     private NavSettings() {}
 
-    // ==================== 成本 / 能力开关 ====================
+    // ==================== 总开关 / 引擎假设 ====================
 
     /** 调试:打开寻路性能探针,{@link com.dwinovo.numen.core.pathing.util.NavProfiler} 按窗口打 [nav-profile] 日志。默认关。 */
     public boolean profile = false;
 
-    /** 允许挖掘方块开路。 */
+    /** 允许挖掘方块开路(总开关;规格的 alter 在其下生效)。 */
     public boolean allowBreak = true;
-    /** 允许疾跑。 */
+    /** 允许疾跑(总开关;规格的 sprint 在其下生效)。 */
     public boolean allowSprint = true;
-    /** 允许放置方块搭路。 */
+    /** 允许放置方块搭路(总开关)。 */
     public boolean allowPlace = true;
     /** 允许动用背包深处(9-35 格)的物品:规划期全背包计入耗材,执行期
      *  自动把耗材/水桶搬进快捷栏。关闭时只认快捷栏与副手。 */
@@ -45,57 +49,18 @@ public final class NavSettings {
     public boolean allowPlaceInFluidsSource = true;
     /** 允许把方块放进流动流体所在格。 */
     public boolean allowPlaceInFluidsFlow = true;
-    /** 放置一个方块的成本罚金(省方块,不鼓励乱放)。 */
-    public double blockPlacementPenalty = 20.0;
-    /**
-     * 每次挖掘的附加成本(除纯挖掘耗时外的定值)。
-     *
-     * <p>30 ≈ 多走 6.5 格。她是住在别人世界里的客人:破坏该是绕不开时的下策,不是抄
-     * 近道的手段。穿一堵墙要拆脚和头两格 ≈ 走 17 格,十几格内有门就走门;地下无路可
-     * 绕时该挖照挖。参照系:挖掘型机器人拿这个值当平手判定(≈2,工具越好拆墙越接近
-     * 免费),定居型 NPC 根本没有破坏这个选项(∞)——同伴两头的活都要干,取中段。
-     */
-    public double blockBreakAdditionalPenalty = 30.0;
-    /** 每次起跳的附加罚金。 */
-    public double jumpPenalty = 2.0;
-    /** 水面行走每格附加罚金。 */
-    public double walkOnWaterOnePenalty = 3.0;
     /** 允许高空坠落时用水桶接底。 */
     public boolean allowWaterBucketFall = true;
-    /** 视水面为可行走地面(默认关,按游泳位语义处理水)。 */
-    public boolean assumeWalkOnWater = false;
-    /** 视岩浆面为可行走地面(默认关)。 */
-    public boolean assumeWalkOnLava = false;
     /** 假定有自动上台阶能力(上一格无需跳跃)。 */
     public boolean assumeStep = false;
     /** 假定行走安全(搭桥时不潜行)。 */
     public boolean assumeSafeWalk = false;
     /** 允许在建筑高度上限起跳。 */
     public boolean allowJumpAtBuildLimit = false;
-    /** 允许跑酷跳上高一格的落点。 */
-    public boolean allowParkourAscend = true;
-    /** 允许对角下降。 */
-    public boolean allowDiagonalDescend = false;
-    /** 允许对角上升。 */
-    public boolean allowDiagonalAscend = false;
-    /** 允许原地向下挖。 */
-    public boolean allowDownward = true;
-    /** 视藤蔓为可攀爬(默认关)。 */
-    public boolean allowVines = false;
-    /** 允许站上下半台阶。 */
-    public boolean allowWalkOnBottomSlab = true;
-    /** 允许跑酷跳跃(2-4 格平跳,默认关)。 */
-    public boolean allowParkour = false;
-    /** 允许跑酷跳跃中途在落点下方放方块(默认关)。 */
-    public boolean allowParkourPlace = false;
     /** 破坏成本计入急迫/挖掘疲劳药水效果。 */
     public boolean considerPotionEffects = true;
-    /** 液体邻格判定从严:任何相邻液体都禁挖(默认关,只禁源与横流)。 */
-    public boolean strictLiquidCheck = false;
     /** 不挖会引发悬空下坠的方块(沙/砾邻格)。 */
     public boolean avoidUpdatingFallingBlocks = true;
-    /** 无水情况下可接受的最大坠落高度。 */
-    public int maxFallHeightNoWater = 3;
     /** 每点摔落伤害折算的代价(tick 当量)。走一格约 4.6,默认 20 即"每掉半颗心
      *  宁可多绕四格多路"——疼不再免费,但摔不死的高度依然是路。 */
     public double fallDamageCostPerPoint = 20.0;
@@ -123,8 +88,6 @@ public final class NavSettings {
     public boolean goalBreakFromAbove = false;
     /** 分层建造中当前层没有可执行动作时是否跳到下一层。 */
     public boolean skipFailedLayers = false;
-    /** 受保护方块的挖掘速度乘数(0.1 即成本 ×10)。 */
-    public double avoidBreakingMultiplier = 0.1;
     /** 启用生物/刷怪笼规避(默认关,关闭时 Favoring 不叠规避球)。 */
     public boolean avoidance = false;
     /** 刷怪笼规避系数(>1 规避,<1 主动靠近)。 */
@@ -150,25 +113,40 @@ public final class NavSettings {
     public int pathingMapDefaultSize = 1024;
     /** 节点表负载因子。 */
     public float pathingMapLoadFactor = 0.75f;
-    /** 首段搜索:找到可用部分路径后的预算(毫秒)。 */
-    public long primaryTimeoutMS = 500;
-    /** 首段搜索:毫无可用结果时烧满的预算(毫秒)。 */
-    public long failureTimeoutMS = 2000;
-    /** 接续段搜索的 primary 预算(毫秒)。 */
-    public long planAheadPrimaryTimeoutMS = 4000;
-    /** 接续段搜索的 failure 预算(毫秒)。 */
-    public long planAheadFailureTimeoutMS = 5000;
-    /**
-     * 单次 A* 展开节点数的【失控安全网】,不是常规限制。正常搜索由时间预算({@link #primaryTimeoutMS}
-     * 等)约束:一次搜索探到时间预算耗尽为止,CPU 由有界线程池 + 低优先级线程兜住。
-     * 此值设得足够高,以致 5 秒时间预算总是先触发(挖掘寻路约 5 万节点/秒,5 秒也才 ~25 万),
-     * 因此它在正常游戏里【永不触发】,只用于兜底一个理论上"时间检查都没能停下"的病态死循环。
+    /*
+     * 搜索预算按展开的节点数计,不按时间:同一个起点、目标与地形,在任何机器、任何负载下搜到的都是
+     * 同一个结论。按时间计的话,搜索线程(最低优先级)在忙机器上被晾着、JIT 还没热、正赶上 GC,
+     * 同样的时间里展开的节点就少,闲时二十毫秒找到的路,忙时交出半截路或"无路"。
      *
-     * <p><b>不许拿它当"节点上限"去压 CPU</b>:挖矿的大复合目标(几十个矿一起搜)启发指引弱,
-     * 探超过 5 万节点才找到路是常事,砍在那里就成了"误判无路 → 拉黑近处矿 → 舍近求远"。
-     * CPU 的事归线程池和优先级管,这里只是安全网。命中(极罕见)时返回当前最优半程,与超时同收尾。
+     * 取值:闲时整套 GameTest 实测每 CPU 毫秒展开约 50 个节点(p10–p90 为 43–59),与挖掘寻路约 5 万节点/秒
+     * 的经验一致;下面四个数在这样的机器上约合半秒、两秒、四秒、五秒的搜索。
+     * 整套 GameTest 里走到目标的搜索最多展开约 3700 个节点,远在首段预算之内;挖矿的大复合目标启发
+     * 指引弱,探几万个节点才找到路是常事,预算不能再往下压,否则就是"误判无路 → 舍近求远"。
+     *
+     * 搜索都在后台线程池上跑(冻结快照),节点预算也就是一次搜索能花的算力上限,主线程不受它影响;
+     * 慢机器上同样的节点数要多等一会儿,等待期间任务期限按规划在飞冻结。
      */
-    public int maxNodesPerSearch = 2_000_000;
+    /** 首段搜索:已有可用部分路径(离起点 5 格以上)之后的预算(节点数)。 */
+    public int primaryNodes = 25_000;
+    /** 首段搜索:毫无可用结果时烧满的预算(节点数),也是首段搜索展开节点数的上限。 */
+    public int failureNodes = 100_000;
+    /** 接续段搜索的 primary 预算(节点数)。 */
+    public int planAheadPrimaryNodes = 200_000;
+    /** 接续段搜索的 failure 预算(节点数),也是接续段搜索展开节点数的上限。 */
+    public int planAheadFailureNodes = 250_000;
+
+    // ==================== 规划查询 ====================
+
+    /**
+     * 出备选路线的惩罚倍率:上一条路踩过的每一格,踩价按它计(附加 (倍率-1)×单格步行成本,
+     * 见 {@code RoutePlanner})。惩罚法而不是随机扰动——路线多样性的研究结论是惩罚法得到的
+     * 备选重叠少得多,且可复现。
+     */
+    public double routeAlternativePenaltyFactor = 3.0;
+    /** 备选与已有候选的格位重叠率高于此值即丢弃(0-1)。 */
+    public double routeAlternativeMaxOverlap = 0.7;
+    /** 每个同伴的路线簿最多存几条候选,超出淘汰最早的。 */
+    public int routeBookCapacity = 6;
 
     // ==================== 路径 / 分段 ====================
 
@@ -209,8 +187,6 @@ public final class NavSettings {
     public boolean walkWhileBreaking = true;
     /** 头顶有下坠方块实体时暂停挖掘等待落定。 */
     public boolean pauseMiningForFallingBlocks = true;
-    /** 方块交互距离。 */
-    public double blockReachDistance = 4.5;
     /** 连续挖掘的破块间隔(tick)。 */
     public int blockBreakSpeed = 6;
     /** 连续右键的间隔(tick)。 */
@@ -218,30 +194,11 @@ public final class NavSettings {
 
     // ==================== 方块 / 物品清单(懒加载,首次访问才触碰注册表) ====================
 
-    private List<Block> blocksToAvoid;
-    private List<Block> blocksToAvoidBreaking;
     private List<Block> allowBreakAnyway;
     private List<Block> buildIgnoreBlocks;
     private List<Block> okIfAir;
     private List<String> buildIgnoreProperties;
     private Map<Block, List<Block>> buildValidSubstitutes;
-
-    /** 永不穿行的方块(额外拉黑清单)。 */
-    public List<Block> blocksToAvoid() {
-        if (blocksToAvoid == null) {
-            blocksToAvoid = new ArrayList<>();
-        }
-        return blocksToAvoid;
-    }
-
-    /** 尽量不挖的功能方块:挖掘成本乘 1/{@link #avoidBreakingMultiplier}。 */
-    public List<Block> blocksToAvoidBreaking() {
-        if (blocksToAvoidBreaking == null) {
-            blocksToAvoidBreaking = new ArrayList<>(List.of(
-                    Blocks.CRAFTING_TABLE, Blocks.FURNACE, Blocks.CHEST, Blocks.TRAPPED_CHEST));
-        }
-        return blocksToAvoidBreaking;
-    }
 
     /** {@link #allowBreak} 关闭时仍允许挖掘的例外方块。 */
     public List<Block> allowBreakAnyway() {

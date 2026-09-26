@@ -1,5 +1,6 @@
 package com.dwinovo.numen.agent.tool;
 
+import com.dwinovo.numen.Constants;
 import com.dwinovo.numen.agent.provider.IToolSpec;
 import com.dwinovo.numen.entity.NumenPlayer;
 import com.dwinovo.numen.task.TaskResult;
@@ -20,25 +21,7 @@ import java.util.function.Consumer;
  */
 public interface NumenTool extends IToolSpec {
 
-    /**
-     * 工具在请求里的<b>驻留方式</b>。判据是"每轮都用不用",不是"重不重要":
-     * 动作动词({@code mine}/{@code build}/{@code craft})是一次性派发,派完靠
-     * {@code task_status} 轮询,调用频次其实很低;真正每轮都要的是感知与轮询。
-     *
-     * <p>缺省 {@link Residency#DEFERRED} —— 新工具默认不占每轮的位置,要常驻得自己
-     * 表态。反过来(默认常驻)的话,忘了表态的工具会悄悄挤进每一轮请求。
-     */
-    default Residency residency() {
-        return Residency.DEFERRED;
-    }
 
-    /** 见 {@link #residency()}。 */
-    enum Residency {
-        /** 完整定义每轮随请求发出。 */
-        RESIDENT,
-        /** 只在目录里留一行摘要,模型调 {@code find_tools} 才取回完整定义。 */
-        DEFERRED
-    }
 
     /**
      * Run this tool for one call — the engine's ONLY entry point. 默认实现是
@@ -60,5 +43,20 @@ public interface NumenTool extends IToolSpec {
                              NumenPlayer companion, Consumer<String> reply) {
         reply.accept(TaskResult.fail(
                 "tool '" + name() + "' has no server-side body implementation").toJson());
+    }
+
+    /**
+     * 服务端收下一次调用:交给 {@link #onServerCall}。调用自己抛出的错误(参数对不上、缺了必填的)当作这次调用的
+     * 失败回执送回,不让它在传输层炸开——模型拿到"参数不对"这句话才知道改哪儿。网络入口与重启后的重放都经这里,
+     * 不各自接一遍;工具不覆写它。
+     */
+    default void serve(String toolCallId, JsonObject args, NumenPlayer companion, Consumer<String> reply) {
+        try {
+            onServerCall(toolCallId, args, companion, reply);
+        } catch (RuntimeException invalid) {
+            Constants.LOG.warn("[numen-net] ✗ {} rejected its arguments: {} args={}",
+                    name(), invalid.getMessage(), args);
+            reply.accept(TaskResult.fail("invalid arguments: " + invalid.getMessage()).toJson());
+        }
     }
 }

@@ -28,6 +28,8 @@ import net.minecraftforge.fml.loading.FMLEnvironment;
 public class NumenMod {
 
     public NumenMod() {
+        com.dwinovo.numen.platform.ForgePlatformHelper.ARGUMENT_TYPES.register(
+                net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext.get().getModEventBus());
         // Register the TOML config spec — Forge handles file creation +
         // hot-reload from here on. SPEC is built in the ForgeNumenConfig static
         // initialiser (just data, no I/O), so referencing it now is safe.

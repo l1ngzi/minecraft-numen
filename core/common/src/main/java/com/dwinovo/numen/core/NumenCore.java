@@ -40,7 +40,8 @@ import com.dwinovo.numen.core.task.move.MoveToTaskRecord;
  * <ul>
  *   <li>tools — each a {@link com.dwinovo.numen.agent.tool.NumenTool} (raw) and
  *       added to the global {@link ToolRegistry} (order preserved for prompt
- *       caching);</li>
+ *       caching), or a command group registered through the plugin door, whose
+ *       promoted actions enter the registry at that same point;</li>
  *   <li>task runners — each {@code TaskRecord} type a world-action tool emits is
  *       paired with the {@code CompanionTask} that runs it, via
  *       {@link CompanionTaskFactory#register}.</li>
@@ -57,6 +58,9 @@ public final class NumenCore {
         initialised = true;
         registerTools();
         registerTaskRunners();
+        // 原版四件甲是第一处穿戴来源,和模组的饰品栏走同一扇门;内嵌联动在这之后才开闸,所以原版排在最前
+        com.dwinovo.numen.api.NumenPlugins.register(numen ->
+                numen.registerGear(new com.dwinovo.numen.core.gear.VanillaArmor()));
         registerReflexes();
         enlistReflexRoster();
         Constants.LOG.info("[numen-core] registered {} tool(s), {} task type(s); survival chains enabled",
@@ -115,9 +119,9 @@ public final class NumenCore {
         ToolRegistry.register(new com.dwinovo.numen.core.tools.interact.SleepTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.interact.InteractEntityTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.inventory.EatItemTool());
-        ToolRegistry.register(new com.dwinovo.numen.task.TaskStatusTool());
-        ToolRegistry.register(new com.dwinovo.numen.task.TaskStopTool());
-        ToolRegistry.register(new com.dwinovo.numen.task.SetTimerTool());
+        // 引擎的 numen task 命令组,和插件走同一扇门;它提升出的 task_status / task_stop / set_timer 就在这里进表,
+        // 工具表的顺序不变。
+        com.dwinovo.numen.api.NumenPlugins.register(com.dwinovo.numen.task.TaskCommands::install);
         ToolRegistry.register(new com.dwinovo.numen.core.tools.inventory.DropItemsTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.inventory.TakeItemsTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.interact.InspectGuiTool());
@@ -135,8 +139,11 @@ public final class NumenCore {
         ToolRegistry.register(new com.dwinovo.numen.core.tools.perception.InspectBlockStorageTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.perception.GetWorldInfoTool());
         ToolRegistry.register(new com.dwinovo.numen.core.tools.agent.TodoWriteTool());   // raw NumenTool
-        ToolRegistry.register(new com.dwinovo.numen.core.tools.agent.FindToolsTool());   // raw NumenTool
         ToolRegistry.register(new com.dwinovo.numen.core.tools.agent.LoadSkillTool());   // raw NumenTool
+        ToolRegistry.register(new com.dwinovo.numen.core.tools.agent.RememberTool());    // raw NumenTool
+        ToolRegistry.register(new com.dwinovo.numen.core.tools.agent.RecallTool());      // raw NumenTool
+        ToolRegistry.register(new com.dwinovo.numen.core.tools.agent.ForgetTool());      // raw NumenTool
+        ToolRegistry.register(new com.dwinovo.numen.core.tools.work.PlanRouteTool());
     }
 
 
@@ -149,6 +156,8 @@ public final class NumenCore {
         TaskFactory.register(com.dwinovo.numen.core.task.inventory.UnequipTaskRecord.class,
                 (p, r) -> new com.dwinovo.numen.core.task.inventory.UnequipCompanionTask(p, r));
         TaskFactory.register(DropItemsTaskRecord.class, (p, r) -> new DropCompanionTask(p, r));
+        TaskFactory.register(com.dwinovo.numen.core.task.inventory.TransferTaskRecord.class,
+                (p, r) -> new com.dwinovo.numen.core.task.inventory.TransferCompanionTask(p, r));
         TaskFactory.register(EatItemTaskRecord.class, (p, r) -> new EatCompanionTask(p, r));
         TaskFactory.register(AttackTaskRecord.class, (p, r) -> new AttackCompanionTask(p, r));
         TaskFactory.register(CollectItemsTaskRecord.class, (p, r) -> new CollectItemsCompanionTask(p, r));

@@ -43,7 +43,7 @@ import java.util.UUID;
  *
  * <h2>到点之后</h2>
  * 一句 {@link NumenEvents#emit} 就够:主人在线立刻送达并开一轮,主人离线进出箱等他回来,
- * 她死着则队列锁住、复活解锁时一起走。这三件事各自已有归属,这里不重复实现。
+ * 她死着则停牌不开 run、复活时一起走。这三件事各自已有归属,这里不重复实现。
  *
  * <p>服务端专用。
  */
@@ -178,7 +178,7 @@ public final class TimerRegistry extends SavedData {
                 }
                 continue;
             }
-            NumenEvents.emit(body, NumenEvents.Kind.TIMER, Map.of("id", t.id()),
+            NumenEvents.emit(body, com.dwinovo.numen.agent.inbox.EventTypes.TIMER, Map.of("id", t.id()),
                     "你定的表到点了:" + t.reason()
                             + "。表只负责提醒,不代表那件事已经完成——先看清现在的状况再决定下一步。",
                     true);

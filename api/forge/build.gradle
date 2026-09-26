@@ -4,6 +4,12 @@ plugins {
     id 'org.spongepowered.mixin' version '0.7-SNAPSHOT'
 }
 
+evaluationDependsOn(':ai')
+
+evaluationDependsOn(':agent')
+
+evaluationDependsOn(':ui')
+
 // Forge 1.20.1 运行期是 SRG 名,而 mixin 源码按官方名写——必须生成 refmap 把
 // 字符串引用翻译过去,否则运行期找不到字段直接崩。
 mixin {
@@ -32,6 +38,7 @@ minecraft {
                 modClientRun {
                     source sourceSets.main
                     source project(':ai').sourceSets.main
+                    source project(':agent').sourceSets.main
                     source project(':ui').sourceSets.main
                 }
             }
@@ -44,6 +51,7 @@ minecraft {
                 modServerRun {
                     source sourceSets.main
                     source project(':ai').sourceSets.main
+                    source project(':agent').sourceSets.main
                     source project(':ui').sourceSets.main
                 }
             }
@@ -57,6 +65,7 @@ minecraft {
                 modDataRun {
                     source sourceSets.main
                     source project(':ai').sourceSets.main
+                    source project(':agent').sourceSets.main
                     source project(':ui').sourceSets.main
                 }
             }

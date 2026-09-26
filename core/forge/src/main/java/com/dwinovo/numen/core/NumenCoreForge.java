@@ -33,13 +33,39 @@ public class NumenCoreForge {
         com.dwinovo.numen.plugins.Builtin.registerAll(
                 net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext.get().getModEventBus());
         NumenCore.init();
+        // Forge 收集 GameTest 方法时不会初始化持有类;测试命令必须在服务器建指令树前登记。
+        // 结构目录只在仓库的开发运行配置里声明,发行物不挂测试命令。
+        if (System.getProperty("numen.gametest.structures") != null) {
+            com.dwinovo.numen.core.gametest.CommandGameTests.registerFixture();
+            com.dwinovo.numen.core.gametest.TaskControlGameTests.registerFixture();
+        }
 
         // 游戏内用例的注册走<b>模组总线</b>,不是游戏总线:Forge 1.20.1 不像高版本
         // 那样扫描 @GameTestHolder 自动收集,得在 RegisterGameTestsEvent 里把持有
         // 类交出去。跑批时由 -Dforge.enabledGameTestNamespaces 决定跑不跑。
         net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext.get().getModEventBus()
-                .addListener((net.minecraftforge.event.RegisterGameTestsEvent e) ->
-                        e.register(com.dwinovo.numen.core.gametest.CompanionGameTests.class));
+                .addListener((net.minecraftforge.event.RegisterGameTestsEvent e) -> {
+                    e.register(com.dwinovo.numen.core.gametest.BuildGameTests.class);
+                    e.register(com.dwinovo.numen.core.gametest.CollectGameTests.class);
+                    e.register(com.dwinovo.numen.core.gametest.CombatGameTests.class);
+                    e.register(com.dwinovo.numen.core.gametest.CommandGameTests.class);
+                    e.register(com.dwinovo.numen.core.gametest.ContainerGameTests.class);
+                    e.register(com.dwinovo.numen.core.gametest.FishGameTests.class);
+                    e.register(com.dwinovo.numen.core.gametest.GameTestKit.class);
+                    e.register(com.dwinovo.numen.core.gametest.GearGameTests.class);
+                    e.register(com.dwinovo.numen.core.gametest.InteractGameTests.class);
+                    e.register(com.dwinovo.numen.core.gametest.InventoryGameTests.class);
+                    e.register(com.dwinovo.numen.core.gametest.LocateGameTests.class);
+                    e.register(com.dwinovo.numen.core.gametest.MineGameTests.class);
+                    e.register(com.dwinovo.numen.core.gametest.ModeGameTests.class);
+                    e.register(com.dwinovo.numen.core.gametest.MovementGameTests.class);
+                    e.register(com.dwinovo.numen.core.gametest.PerceptionGameTests.class);
+                    e.register(com.dwinovo.numen.core.gametest.PermissionGameTests.class);
+                    e.register(com.dwinovo.numen.core.gametest.PluginGameTests.class);
+                    e.register(com.dwinovo.numen.core.gametest.SleepGameTests.class);
+                    e.register(com.dwinovo.numen.core.gametest.SurvivalGameTests.class);
+                    e.register(com.dwinovo.numen.core.gametest.TaskControlGameTests.class);
+                });
 
         MinecraftForge.EVENT_BUS.addListener(NumenCoreForge::onServerTickPost);
         // Debug verbs merged into the /numen root registered by the engine mod.
@@ -57,7 +83,7 @@ public class NumenCoreForge {
     }
 
     private static void declareBundledSkills() {
-        Path root = ModList.get().getModFileById(Constants.MOD_ID).getFile().findResource("skills");
+        Path root = ModJar.find("skills");
         if (root != null) {
             SkillRegistry.instance().declareBundled(root);
         } else {
@@ -72,9 +98,8 @@ public class NumenCoreForge {
         MinecraftServer server = event.getServer();
         // 排程机器的心跳随机器归了 numen-api;core 只 tick 自己的工具配套。
         BlockSearch.tick(server);
+        com.dwinovo.numen.core.pathing.plan.RoutePlanner.serverTick(server);
         PathCaches.serverTick(server);
-        // Periodic eviction sweep for the target-block index (entries of unloaded chunks).
-        com.dwinovo.numen.core.scan.TargetIndex.serverTick(server);
         // Debug particles for pathing state, sent only to players with debug on.
         PathDebugRenderer.serverTick(server);
     }

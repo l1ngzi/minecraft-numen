@@ -39,7 +39,7 @@ class InventoryBlockTest {
     private static ClientNumenState.Snapshot snapshot(int selected, ItemStack offhand,
                                                           ItemStack... items) {
         return new ClientNumenState.Snapshot(true, List.of(items), List.of(), 20, 5f,
-                selected, offhand, List.of(), "", -1, 1L);
+                selected, offhand, List.of(), "", -1, "", 1L);
     }
 
     // ==================== 身上在生效的 ====================
@@ -47,14 +47,14 @@ class InventoryBlockTest {
     private static ClientNumenState.Snapshot withEffects(long receivedAtMs,
             net.minecraft.world.effect.MobEffectInstance... effects) {
         return new ClientNumenState.Snapshot(true, List.of(), List.of(), 20, 5f,
-                0, ItemStack.EMPTY, List.of(effects), "", -1, receivedAtMs);
+                0, ItemStack.EMPTY, List.of(effects), "", -1, "", receivedAtMs);
     }
 
     /** 原版 UI 的口径:内部 amplifier 0 显示为 I,所以一级不写数字、二级写 2。 */
     @Test
     void effectsCarryTheirLevelTheWayVanillaShowsIt() {
         assumeTrue(booted);
-        String block = EntityAgentLoop.renderEffects(withEffects(0L,
+        String block = RuntimeState.renderEffects(withEffects(0L,
                 new net.minecraft.world.effect.MobEffectInstance(
                         net.minecraft.world.effect.MobEffects.POISON, 200, 0),
                 new net.minecraft.world.effect.MobEffectInstance(
@@ -70,7 +70,7 @@ class InventoryBlockTest {
     @Test
     void remainingTimeCountsDownFromWhenTheSnapshotArrived() {
         assumeTrue(booted);
-        String block = EntityAgentLoop.renderEffects(withEffects(0L,
+        String block = RuntimeState.renderEffects(withEffects(0L,
                 new net.minecraft.world.effect.MobEffectInstance(
                         net.minecraft.world.effect.MobEffects.POISON, 200, 0)), 5_000L);
         assertTrue(block.contains("poison (5s left)"), block);
@@ -80,7 +80,7 @@ class InventoryBlockTest {
     @Test
     void effectsThatRanOutSinceTheSnapshotAreDropped() {
         assumeTrue(booted);
-        String block = EntityAgentLoop.renderEffects(withEffects(0L,
+        String block = RuntimeState.renderEffects(withEffects(0L,
                 new net.minecraft.world.effect.MobEffectInstance(
                         net.minecraft.world.effect.MobEffects.POISON, 200, 0)), 60_000L);
         assertEquals("", block);
@@ -92,7 +92,7 @@ class InventoryBlockTest {
     @Test
     void potionsAreToldApartByWhatIsInThem() {
         assumeTrue(booted);
-        String block = EntityAgentLoop.renderInventory(snapshot(0, ItemStack.EMPTY,
+        String block = RuntimeState.renderInventory(snapshot(0, ItemStack.EMPTY,
                 potion(net.minecraft.world.item.alchemy.Potions.HEALING),
                 potion(net.minecraft.world.item.alchemy.Potions.POISON)));
         assertTrue(block.contains("minecraft:potion[healing]"), block);
@@ -103,7 +103,7 @@ class InventoryBlockTest {
     @Test
     void strengthAndDurationVariantsKeepTheirOwnNames() {
         assumeTrue(booted);
-        String block = EntityAgentLoop.renderInventory(snapshot(0, ItemStack.EMPTY,
+        String block = RuntimeState.renderInventory(snapshot(0, ItemStack.EMPTY,
                 potion(net.minecraft.world.item.alchemy.Potions.STRONG_HEALING)));
         assertTrue(block.contains("minecraft:potion[strong_healing]"), block);
     }
@@ -112,7 +112,7 @@ class InventoryBlockTest {
     @Test
     void ordinaryItemsGainNoSuffix() {
         assumeTrue(booted);
-        String block = EntityAgentLoop.renderInventory(snapshot(0, ItemStack.EMPTY,
+        String block = RuntimeState.renderInventory(snapshot(0, ItemStack.EMPTY,
                 new ItemStack(Items.DIRT)));
         assertTrue(block.contains("minecraft:dirt x1"), block);
         assertFalse(block.contains("minecraft:dirt["), block);
@@ -129,7 +129,7 @@ class InventoryBlockTest {
     @Test
     void theMainHandIsWhicheverSlotIsSelected() {
         assumeTrue(booted);
-        String block = EntityAgentLoop.renderInventory(snapshot(1, ItemStack.EMPTY,
+        String block = RuntimeState.renderInventory(snapshot(1, ItemStack.EMPTY,
                 new ItemStack(Items.DIRT), new ItemStack(Items.IRON_PICKAXE)));
         assertTrue(block.contains("main minecraft:iron_pickaxe"), block);
     }
@@ -138,14 +138,14 @@ class InventoryBlockTest {
     @Test
     void aSelectedSlotWithNothingBehindItReadsAsEmpty() {
         assumeTrue(booted);
-        String block = EntityAgentLoop.renderInventory(snapshot(4, ItemStack.EMPTY));
+        String block = RuntimeState.renderInventory(snapshot(4, ItemStack.EMPTY));
         assertTrue(block.contains("main (empty)"), block);
     }
 
     @Test
     void anEmptyOffHandSaysSoRatherThanGoingMissing() {
         assumeTrue(booted);
-        String block = EntityAgentLoop.renderInventory(snapshot(0, ItemStack.EMPTY,
+        String block = RuntimeState.renderInventory(snapshot(0, ItemStack.EMPTY,
                 new ItemStack(Items.DIRT)));
         assertTrue(block.contains("off (empty)"), block);
     }
@@ -157,7 +157,7 @@ class InventoryBlockTest {
     @Test
     void whatSheHoldsIsNeverCountedTwice() {
         assumeTrue(booted);
-        String block = EntityAgentLoop.renderInventory(snapshot(0, ItemStack.EMPTY,
+        String block = RuntimeState.renderInventory(snapshot(0, ItemStack.EMPTY,
                 new ItemStack(Items.FURNACE, 64)));
         assertTrue(block.contains("carrying=minecraft:furnace x64"), block);
         assertTrue(block.contains("holding (already counted above)=main minecraft:furnace"), block);
@@ -168,7 +168,7 @@ class InventoryBlockTest {
     @Test
     void theOffHandStackIsAlsoInTheTotalsAndNotRepeated() {
         assumeTrue(booted);
-        String block = EntityAgentLoop.renderInventory(snapshot(0, new ItemStack(Items.TORCH, 12),
+        String block = RuntimeState.renderInventory(snapshot(0, new ItemStack(Items.TORCH, 12),
                 new ItemStack(Items.DIRT, 3)));
         assertTrue(block.contains("off minecraft:torch"), block);
         assertFalse(block.contains("x12"), block);   // 副手是装备槽,不在 36 格总数里,也不另报数量
@@ -180,7 +180,7 @@ class InventoryBlockTest {
     @Test
     void thesameItemInSeveralSlotsIsOneTotal() {
         assumeTrue(booted);
-        String block = EntityAgentLoop.renderInventory(snapshot(0, ItemStack.EMPTY,
+        String block = RuntimeState.renderInventory(snapshot(0, ItemStack.EMPTY,
                 new ItemStack(Items.COBBLESTONE, 64),
                 new ItemStack(Items.COBBLESTONE, 64),
                 new ItemStack(Items.COBBLESTONE, 22)));
@@ -190,7 +190,7 @@ class InventoryBlockTest {
     @Test
     void emptySlotsAreNotListed() {
         assumeTrue(booted);
-        String block = EntityAgentLoop.renderInventory(snapshot(0, ItemStack.EMPTY,
+        String block = RuntimeState.renderInventory(snapshot(0, ItemStack.EMPTY,
                 new ItemStack(Items.DIRT, 3), ItemStack.EMPTY, ItemStack.EMPTY));
         assertTrue(block.contains("carrying=minecraft:dirt x3"), block);
         assertFalse(block.contains("air"), block);
@@ -200,7 +200,7 @@ class InventoryBlockTest {
     @Test
     void anEmptyBodySaysNothingOutLoud() {
         assumeTrue(booted);
-        String block = EntityAgentLoop.renderInventory(snapshot(0, ItemStack.EMPTY));
+        String block = RuntimeState.renderInventory(snapshot(0, ItemStack.EMPTY));
         assertTrue(block.contains("carrying=nothing"), block);
     }
 
@@ -209,7 +209,7 @@ class InventoryBlockTest {
     @Test
     void theBlockNamesItselfSoTheModelCanTellItApartFromToolOutput() {
         assumeTrue(booted);
-        String block = EntityAgentLoop.renderInventory(snapshot(0, ItemStack.EMPTY,
+        String block = RuntimeState.renderInventory(snapshot(0, ItemStack.EMPTY,
                 new ItemStack(Items.DIRT)));
         assertTrue(block.startsWith("<inventory>"), block);
         assertTrue(block.endsWith("</inventory>"), block);
@@ -219,7 +219,7 @@ class InventoryBlockTest {
     @Test
     void itTellsHerNotToRediscoverThisWithATool() {
         assumeTrue(booted);
-        String block = EntityAgentLoop.renderInventory(snapshot(0, ItemStack.EMPTY));
+        String block = RuntimeState.renderInventory(snapshot(0, ItemStack.EMPTY));
         assertTrue(block.contains("get_self_status"), block);
         assertTrue(block.contains("inspect_gui"), block);
     }
@@ -231,9 +231,9 @@ class InventoryBlockTest {
         assumeTrue(booted);
         assertEquals(ItemStack.EMPTY,
                 new ClientNumenState.Snapshot(true, List.of(), List.of(), 20, 5f,
-                        3, ItemStack.EMPTY, List.of(), "", -1, 1L).mainHand());
+                        3, ItemStack.EMPTY, List.of(), "", -1, "", 1L).mainHand());
         assertEquals(ItemStack.EMPTY,
                 new ClientNumenState.Snapshot(true, List.of(), List.of(), 20, 5f,
-                        -1, ItemStack.EMPTY, List.of(), "", -1, 1L).mainHand());
+                        -1, ItemStack.EMPTY, List.of(), "", -1, "", 1L).mainHand());
     }
 }

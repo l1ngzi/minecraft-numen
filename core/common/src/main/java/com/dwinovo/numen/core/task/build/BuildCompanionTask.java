@@ -1,18 +1,25 @@
 package com.dwinovo.numen.core.task.build;
 
 import com.dwinovo.numen.core.FailureType;
+import com.dwinovo.numen.core.act.BlockDigger;
 import com.dwinovo.numen.core.pathing.bridge.ContextFactory;
 import com.dwinovo.numen.core.pathing.cache.LoadedOnlyView;
 import com.dwinovo.numen.core.pathing.calc.NavGoal;
 import com.dwinovo.numen.core.pathing.goal.GoalCompiler;
+import com.dwinovo.numen.core.pathing.moves.ActionCosts;
 import com.dwinovo.numen.core.pathing.moves.CalculationContext;
+import com.dwinovo.numen.core.pathing.moves.ChunkLoadedTest;
 import com.dwinovo.numen.core.pathing.moves.MovementHelper;
 import com.dwinovo.numen.core.pathing.moves.movements.BuildPlacementRegistry;
 import com.dwinovo.numen.core.pathing.execute.PlayerNav;
+import com.dwinovo.numen.core.pathing.spec.PositionCosts;
+import com.dwinovo.numen.core.pathing.spec.RouteSpec;
 import com.dwinovo.numen.core.task.base.AbstractCompanionTask;
 import com.dwinovo.numen.core.task.base.Precondition;
 import com.dwinovo.numen.entity.NumenPlayer;
 import com.dwinovo.numen.entity.InputDriver;
+import com.dwinovo.numen.permission.Gate;
+import com.dwinovo.numen.permission.PlacedBlocks;
 import com.dwinovo.numen.task.TaskState;
 
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
@@ -20,6 +27,7 @@ import it.unimi.dsi.fastutil.longs.LongSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.state.BlockState;
@@ -64,6 +72,12 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
     private static final int LAYER_PAUSE_TICKS = 18;
     /** 巡视路线离工地包围盒的外扩格数。 */
     private static final int SITE_MARGIN = 2;
+    /**
+     * 踩进或穿过工地格的代价:一步抵一百格路。任何绕行都比穿过去便宜,所以赴工地、
+     * 巡场永远绕着图纸走;但它不是 FORBID——被外力挪进图纸里(挤、推、掉落)时,
+     * 她还得能走出来,走出来那几步就是她付的这份价。
+     */
+    private static final double SITE_BODY_COST = ActionCosts.WALK_ONE_BLOCK_COST * 100;
     /** 挑落脚点时往前看多少格,决定她该站到哪一侧去。 */
     private static final int WANDER_LOOKAHEAD_CELLS = 120;
     /** 换个地方站:让她绕着工地动起来,而不是钉在原地。 */
@@ -75,8 +89,8 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
 
     /**
      * 写入标志:{@code UPDATE_CLIENTS}(同步给客户端)+ {@code UPDATE_KNOWN_SHAPE}
-     * (跳过形状重算),<b>不含</b> {@code UPDATE_NEIGHBORS}。连接形状的账不欠着:
-     * 收尾 {@link #fixConnections()} 统一按真实邻居补算。
+     * (跳过形状重算),<b>不含</b> {@code UPDATE_NEIGHBORS}。这笔账不欠着:
+     * 收尾 {@link #settleWithWorld()} 让世界统一落定一次。
      *
      * <p>这是整个施工能不能照图落地的分水岭。默认的 {@code 3} 会通知邻块并触发
      * 形状重算,于是原版立刻拿它自己的规则复核我们刚写下的每一格:靠在非泥土
@@ -87,20 +101,23 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
      * <p>所以这里不走通知链路:<b>图纸怎么画就怎么落</b>,不让世界中途改我们的
      * 稿。光照仍由区块自己维护,不会盖出一栋黑房子。
      *
-     * <p>代价是建成后邻块不联动(红石不自动初始化)。对一栋房子来说这是划算的:
-     * 少了它房子盖不完整,有了它只是红石要玩家碰一下。
+     * <p>压着不通知只管施工期——那一刻世界是半成品,火把写下去时它靠的墙可能还没砌。
+     * 建完就该放手,见 {@link #settleWithWorld()}。
      */
     private static final int PLACE_FLAGS =
             net.minecraft.world.level.block.Block.UPDATE_CLIENTS
                     | net.minecraft.world.level.block.Block.UPDATE_KNOWN_SHAPE;
 
-    private enum Phase { TRAVEL, WORK }
+    /** CONSENT:开工前整批问主人;TRAVEL:赴工地;WORK:施工。 */
+    private enum Phase { CONSENT, TRAVEL, WORK }
 
     private final BuildCellRules rules;
     private final BuildInventory inv;
     private final BuildFixtures fixtures;
     private final BuildLedger ledger;
     private final BuildShowmanship show;
+    /** 清障与撤脚手架的唯一落点:方块只在 {@link BlockDigger} 里被破坏,权限层在那儿把门。 */
+    private final BlockDigger digger;
 
     private final Map<Long, BuildTaskRecord.Target> targetByPos = new LinkedHashMap<>();
     /** 施工期寻路垫出来的非目标方块,收工时一并撤掉。 */
@@ -111,7 +128,8 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
     private LongOpenHashSet observedCompleted;
     private boolean providerRegistered;
     private Phase phase = Phase.TRAVEL;
-    private int travelTicks;
+    /** 动身赴工地时的 {@link #workTicks()}。 */
+    private long travelSince;
 
     /** 工地包围盒(全体目标格的最小/最大角)。 */
     private BlockPos siteMin;
@@ -172,10 +190,21 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
     /** 挪窝状态。 */
     private List<Vec3> wanderPoints = List.of();
     private int wanderIndex;
+    /** 两次挪窝之间干了几刻活。 */
     private int wanderTicks;
     private Vec3 wanderTarget;
+    /** 动身去这次挪窝落点时的 {@link #workTicks()}。 */
+    private long wanderSince;
 
     private String note = "done";
+
+    /** 开工前要问主人的清单(清的格与放的格里裁决为要问的)。 */
+    private List<com.dwinovo.numen.permission.ConsentItem> consentItems = List.of();
+    /** 清单涉及的目标格——主人拒绝时,这些格按"主人不让动"交代。 */
+    private final LongOpenHashSet consentCells = new LongOpenHashSet();
+    /** 主人拒绝了的目标格,与他的原话。 */
+    private final LongOpenHashSet ownerRefused = new LongOpenHashSet();
+    private String ownerWords = "";
 
     public BuildCompanionTask(NumenPlayer player, BuildTaskRecord record) {
         super(player, record);
@@ -184,6 +213,7 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
         this.fixtures = new BuildFixtures(player, record, inv);
         this.ledger = new BuildLedger(player, record, rules, inv, fixtures);
         this.show = new BuildShowmanship(player, inv);
+        this.digger = new BlockDigger(player);
         for (BuildTaskRecord.Target target : record.targets) {
             targetByPos.put(target.pos().asLong(), target);
         }
@@ -232,7 +262,7 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
     }
 
     private Precondition.Failure checkExistingBlocks() {
-        if (r.replaceExisting) {
+        if (r.replaceMode != ReplaceMode.DONT_REPLACE) {
             return null;
         }
         for (BuildTaskRecord.Target target : r.targets) {
@@ -257,11 +287,60 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
         rebuildOrder();
         computePace();
         passStartCompleted = r.completed();
+        collectConsent();
+        phase = consentItems.isEmpty() ? Phase.TRAVEL : Phase.CONSENT;
+    }
+
+    /**
+     * 施工前把要清的格与要放的格整批过一遍权限层,裁决为要问的合成一张卡。放行的照建;
+     * 不许的(规则、模式、外部强制)由 {@link BuildCellRules#blockedByMode} 照常跳过。
+     */
+    private void collectConsent() {
+        var gate = com.dwinovo.numen.permission.Permission.gateFor(player);
+        List<com.dwinovo.numen.permission.ConsentItem> items = new ArrayList<>();
+        for (BuildTaskRecord.Target target : r.targets) {
+            if (target.matches(rules.peek(target.pos()))
+                    || !r.replaceMode.allows(rules.peek(target.pos()), target.desiredState())
+                    || rules.hopeless(target)) {
+                continue;
+            }
+            for (com.dwinovo.numen.permission.Action action : rules.actionsFor(target)) {
+                var verdict = gate.judgeLive(action, player.serverLevel());
+                if (verdict.asks()) {
+                    items.add(gate.consentItemLive(action, verdict, player.serverLevel()));
+                    consentCells.add(target.pos().asLong());
+                }
+            }
+        }
+        consentItems = List.copyOf(items);
+    }
+
+    /**
+     * 等主人答复:身体站住。答应了——那些格从此是放行,重扫重排后开工;拒绝了——那些格仍不许,
+     * 施工照常跳过,收工时按"主人不让动"连同他的原话交代。
+     */
+    private TaskState tickConsent() {
+        InputDriver.halt(player);
+        var answer = consult(consentItems);
+        if (answer == null) {
+            return TaskState.RUNNING;
+        }
+        if (!answer.allowed()) {
+            ownerRefused.addAll(consentCells);
+            ownerWords = answer.words();
+        }
+        consentItems = List.of();
+        rescanAll();
+        rebuildOrder();
         phase = Phase.TRAVEL;
+        return TaskState.RUNNING;
     }
 
     @Override
     protected TaskState onTick() {
+        if (phase == Phase.CONSENT) {
+            return tickConsent();
+        }
         // 蹲姿由施工分支决定并保持:落位只在批次刻发生,若每 tick 复位成站立,
         // 中间那些刻就会把她弹起来,看起来是在抖而不是在蹲着贴边放。
         player.setShiftKeyDown(phase == Phase.WORK && show.crouching());
@@ -279,6 +358,7 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
             }
         }
         return switch (phase) {
+            case CONSENT -> tickConsent();
             case TRAVEL -> tickTravel();
             case WORK -> tickWork();
         };
@@ -295,6 +375,7 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
     private TaskState tickTravel() {
         if (nav == null) {
             NavGoal goal = siteApproachGoal();
+            travelSince = workTicks();
             nav = PlayerNav.to(player,
                     () -> new GoalCompiler.Compiled(goal, protectedCells()),
                     WALK_SPEED, () -> false, this);
@@ -305,9 +386,8 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
                 yield TaskState.RUNNING;
             }
             case RUNNING -> {
-                // 预算只计"正在往那儿走"的刻;搜索在飞的刻是规划器的墙钟延迟,
-                // 在高 tps 的无头测试里折算尤其离谱,不计入。
-                if (!nav.planningInFlight() && ++travelTicks > TRAVEL_BUDGET_TICKS) {
+                // 预算只计"正在往那儿走"的刻(workTicks):等规划的刻长短看机器快慢,不计入。
+                if (workTicks() - travelSince > TRAVEL_BUDGET_TICKS) {
                     com.dwinovo.numen.core.Constants.LOG.debug(
                             "[numen-build] 赴工地超时,就地开工 feet={} 工地={}",
                             player.blockPosition().toShortString(), siteMin.toShortString());
@@ -522,7 +602,9 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
         }
 
         if (occupied) {
-            clear(pos);
+            if (!clear(pos)) {
+                return null;   // 没清掉(权限层拒了、或砸不动):这遍放下,不往上放
+            }
             if (BuildCellRules.isAirTarget(target)) {
                 markObserved(target, true);
                 return desired;
@@ -694,35 +776,21 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
     }
 
     /**
-     * 清掉挡路的方块:生存掉落物品(她清出来的木头该归玩家),免耗材不掉。
+     * 清掉挡路的方块:走挖掘器的原生破坏——生存按主手结算掉落(她清出来的木头该归玩家),
+     * 创造不掉,破坏事件照常触发,权限层在那儿把门。
      *
      * <p>掉落按主手物品结算,而主手此刻拿的是<b>正在砌的那个方块</b>(演出需要),
      * 不是镐。所以石头与矿石这一类清了不掉东西——"归玩家"只在不需要工具的方块上
      * 成立。要让它全成立就得在清障前临时换成镐,那会和演出打架,故此处照实记下。
-     * 破坏特效走原版 levelEvent,音效与碎屑与玩家自己挖一模一样。
+     *
+     * @return 这一格真的清空了
      */
-    private void clear(BlockPos pos) {
-        var level = player.level();
-        BlockState state = level.getBlockState(pos);
-        if (state.isAir()) {
-            return;
+    private boolean clear(BlockPos pos) {
+        if (!digger.destroyNow(pos)) {
+            return false;
         }
-        if (r.consumeMaterials) {
-            try {
-                net.minecraft.world.level.block.Block.dropResources(
-                        state, level, pos, level.getBlockEntity(pos), player,
-                        player.getMainHandItem());
-            } catch (RuntimeException e) {
-                // 掉落要跑战利品表,而战利品表是数据包能改的东西——模组或整合包的一张
-                // 坏表不该让整栋楼停在这一格。清障本身照做:少掉一件东西是遗憾,清不掉
-                // 就永远建不下去。
-                com.dwinovo.numen.core.Constants.LOG.warn(
-                        "[numen-build] {} 的掉落结算失败,方块照清", state, e);
-            }
-        }
-        level.levelEvent(2001, pos, net.minecraft.world.level.block.Block.getId(state));
-        level.setBlock(pos, net.minecraft.world.level.block.Blocks.AIR.defaultBlockState(), PLACE_FLAGS);
         r.brokeOne();
+        return true;
     }
 
     /**
@@ -869,37 +937,55 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
     }
 
     /** 收工:撤掉自己垫的脚手架、生成摆设、外围补水,放一把庆祝的粒子。 */
+
     /**
-     * 连接形状收尾:直写落位刻意不惊动邻居(保图纸原样),代价是体积生成的栅栏/玻璃板
-     * 各自孤立、蓝图边界不贴世界里既有的旧墙。建筑完整后统一按真实邻居重算连接形状:
-     * updateShape 只算"要不要伸手去贴",不触发重力/流体那条物理链;目标格与其六邻
-     * 都算(旧墙那一侧也要伸回来),已连接的算了不变,幂等。对失依附件 updateShape
-     * 会给出空气——建筑完整时不该出现,真出现宁可保留原样也不无声抹掉方块。
+     * 建完之后让世界落定一次:逐格告诉六邻"我在这儿",再通知一圈邻居。
+     *
+     * <h2>为什么施工期不能做、收尾可以</h2>
+     * 施工期世界是<b>半成品</b>——火把写下去时它靠的那面墙可能还没砌,这时候通知邻居
+     * 等于拿半成品复核每一格,贴附方块整批弹掉。建完复核的是成品:掉下来的只有在
+     * <b>完整世界里也确实站不住</b>的格,而它们本来也只是暂时活着(旁边任何一次方块
+     * 更新都会让它们掉)。
+     *
+     * <h2>两句话各管一件事</h2>
+     * {@code updateNeighbourShapes} 让邻居各自重算<b>自己的形状</b>(栅栏伸手、墙连上、
+     * 红石线不再是孤点);{@code updateNeighborsAt} 让世界<b>反应</b>(红石通电、站不住的
+     * 掉落)。两句都是原版自己的话,所以不必维护"哪些方块要补形状"的清单——列清单一定会漏。
+     *
+     * @return 落定之后与图纸不同的格数(掉了的 + 形状被重算的);如实进回执,不无声改动
      */
-    private void fixConnections() {
+    private int settleWithWorld() {
         var level = player.level();
-        java.util.Set<BlockPos> touched = new java.util.LinkedHashSet<>();
+        List<BlockPos> built = new ArrayList<>();
         for (BuildTaskRecord.Target t : r.targets) {
             if (BuildCellRules.isAirTarget(t)) continue;
-            touched.add(t.pos());
-            for (net.minecraft.core.Direction d : net.minecraft.core.Direction.values()) {
-                touched.add(t.pos().relative(d));
+            if (level.getBlockState(t.pos()).is(t.desiredState().getBlock())) {
+                built.add(t.pos());
             }
         }
-        for (BlockPos pos : touched) {
+        for (BlockPos pos : built) {
             BlockState current = level.getBlockState(pos);
-            // 只重算十字连接系(栅栏/玻璃板/铁栏杆)与墙——孤立病只长在它们身上。
-            // 楼梯转角/箱子合体这类形状语义不碰:蓝图边缘格的形状依赖源世界
-            // 截取范围外的邻居,重算会把分毫不差的图纸算成另一个样子。
-            boolean connective = current.getBlock() instanceof net.minecraft.world.level.block.CrossCollisionBlock
-                    || current.getBlock() instanceof net.minecraft.world.level.block.WallBlock;
-            if (current.isAir() || !connective) continue;
-            BlockState updated = net.minecraft.world.level.block.Block
-                    .updateFromNeighbourShapes(current, level, pos);
-            if (updated != current && !updated.isAir()) {
-                level.setBlock(pos, updated, PLACE_FLAGS);
+            if (current.isAir()) continue;
+            current.updateNeighbourShapes(level, pos, net.minecraft.world.level.block.Block.UPDATE_CLIENTS);
+            level.updateNeighborsAt(pos, current.getBlock());
+        }
+        // 落定之后还对不对得上图纸:掉了的、形状被邻居改写的,都算"不同"。
+        int settled = 0;
+        for (BuildTaskRecord.Target t : r.targets) {
+            if (BuildCellRules.isAirTarget(t)) continue;
+            if (!built.contains(t.pos())) continue;
+            if (!t.matches(level.getBlockState(t.pos()))) {
+                settled++;
             }
         }
+        r.settledAway(settled);
+        if (settled > 0) {
+            // 落定改了东西就记一笔:排查"我图纸里明明画了"时,第一眼要看的就是它
+            com.dwinovo.numen.core.Constants.LOG.info(
+                    "[numen-task] build 落定后 {}/{} 格与图纸不同(站不住的掉了、形状按邻居重算了)",
+                    settled, built.size());
+        }
+        return settled;
     }
 
     private TaskState finish() {
@@ -907,11 +993,11 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
             if (targetByPos.containsKey(pos.asLong())) continue;
             BlockState state = player.level().getBlockState(pos);
             if (!state.isAir() && !(state.getBlock() instanceof LiquidBlock)) {
-                player.level().destroyBlock(pos, r.consumeMaterials);
+                digger.destroyNow(pos);
             }
         }
         scaffold.clear();
-        fixConnections();
+        int popped = settleWithWorld();
         fixtures.spawnAll();
         fixtures.nudgeSurroundingWater(siteMin, siteMax);
         show.celebrate(siteMin, siteMax);
@@ -920,10 +1006,23 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
             // 三种交代要并列,不能互相吃掉:此前 skippedFixtures 一非零就只报摆设,
             // 那句"有几格没动"被整段吞掉——两件事同时发生时回执只说一半。
             List<String> notes = new ArrayList<>();
-            if (skippedCells > 0) {
-                // 不说"全对上了"——有格子我们主动没动,得说清有几格、为什么
-                notes.add("left " + skippedCells + " cell(s) alone: something with contents was "
-                        + "already there, or the spot cannot be built on");
+            // 不说"全对上了"——有格子我们主动没动,得说清有几格、为什么;主人不让动的单说
+            int refusedByOwner = 0;
+            for (long cell : ownerRefused) {
+                if (skippedPos.contains(cell)) {
+                    refusedByOwner++;
+                }
+            }
+            if (refusedByOwner > 0) {
+                notes.add("left " + refusedByOwner + " cell(s) alone because the owner said no: " + ownerWords);
+            }
+            if (skippedCells > refusedByOwner) {
+                notes.add("left " + (skippedCells - refusedByOwner) + " cell(s) alone: what is there may not"
+                        + " be moved, or the spot cannot be built on");
+            }
+            if (popped > 0) {
+                notes.add(popped + " cell(s) ended up different once the world settled — vanilla would not"
+                        + " hold them there, or their shape is decided by their neighbours");
             }
             if (r.droppedAtLoad() > 0) {
                 notes.add(r.droppedAtLoad() + " cell(s) of the blueprint were dropped on load"
@@ -965,6 +1064,7 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
         }
         if (nav == null) {
             Vec3 dest = wanderTarget;
+            wanderSince = workTicks();
             nav = PlayerNav.to(player,
                     () -> new GoalCompiler.Compiled(
                             NavGoal.nearGround(BlockPos.containing(dest), 1.5),
@@ -973,7 +1073,7 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
         }
         boolean done = switch (nav.tick()) {
             case ARRIVED, FAILED -> true;
-            case RUNNING -> !nav.planningInFlight() && ++wanderTicks > WANDER_WALK_TICKS;
+            case RUNNING -> workTicks() - wanderSince > WANDER_WALK_TICKS;
         };
         if (done) {
             stopNav();
@@ -1109,11 +1209,15 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
     }
 
     /**
-     * 寻路对工地格的双重禁令:<b>不许拆、不许占</b>。
+     * 寻路对工地格的三条禁令:<b>不许拆、不许埋、不许站进去</b>。
      *
      * <p>不许拆——否则她会为了抄近路把自己刚砌好的墙打个洞穿过去,一边建一边拆。
-     * 不许占——否则寻路会拿垫柱材料把某个目标格填上,那格从此和图纸对不上,还得
+     * 不许埋——否则寻路会拿垫柱材料把某个目标格填上,那格从此和图纸对不上,还得
      * 先拆再放。
+     * 不许站进去——否则赴工地、巡场都会从还是空气的图纸格里抄近路,一条腿走到一半
+     * 被截断,她就站在了自己要放的那格里:身体占着的格放不下,收工时报"有人站着"。
+     * 日式小屋那次差的两格门口台阶,病根就是这个。前两条是硬禁,第三条是重价
+     * ({@link #SITE_BODY_COST}):被外力挪进去时她还得走得出来。
      */
     private LongSet protectedCells() {
         if (siteCells == null) {
@@ -1124,15 +1228,17 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
 
     private LongOpenHashSet siteCells;
 
-    /** 把工地格并进寻路收到的禁令集——两条禁令对本任务起的每一次寻路都生效。 */
-    private LongSet union(LongSet other) {
-        if (other == null || other.isEmpty()) {
-            return protectedCells();
+    /** 把工地格的三条禁令并进这次寻路的规格——对本任务起的每一次寻路都生效。 */
+    private RouteSpec withSite(RouteSpec spec) {
+        if (sitePins == null) {
+            PositionCosts.Builder body = PositionCosts.builder();
+            protectedCells().forEach((long cell) -> body.stand(cell, SITE_BODY_COST).pass(cell, SITE_BODY_COST));
+            sitePins = PositionCosts.protect(protectedCells()).plus(body.build());
         }
-        LongOpenHashSet merged = new LongOpenHashSet(protectedCells());
-        merged.addAll(other);
-        return merged;
+        return spec.withPositions(spec.positions().plus(sitePins));
     }
+
+    private PositionCosts sitePins;
 
     /** 把层窗口对准 order 里最低的那一层。 */
     private void resetLayerWindow() {
@@ -1282,7 +1388,7 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
 
     private boolean isReplaceable(BlockPos pos, BlockState state) {
         return MovementHelper.isReplaceable(pos.getX(), pos.getY(), pos.getZ(), state,
-                com.dwinovo.numen.core.pathing.moves.ChunkLoadedTest.ALWAYS);
+                ChunkLoadedTest.ALWAYS);
     }
 
     /**
@@ -1361,26 +1467,33 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
         return target != null && target.acceptsPlacedState(state);
     }
 
+    /**
+     * 施工就是改地形:挖错块、搭脚手架、被自己封顶时拆一块出去,都是这个任务的本分。
+     * 起跳比平时贵得多:工地上下层之间蹦跶容易把刚砌的东西踩坏,能绕楼梯就绕。
+     */
+    private static final RouteSpec SPEC = RouteSpec.defaults()
+            .withAlter(RouteSpec.Alter.NATURAL)
+            .withJumpPenalty(RouteSpec.defaults().jumpPenalty() + 10.0);
+
     @Override
-    public CalculationContext forSearch(NumenPlayer player, LongSet sacred, LongSet deniedPlace) {
-        return ContextFactory.forSearch(player, union(sacred), union(deniedPlace), permit(),
-                (p, view, loaded, safe, s, denied, permit) -> new BuildCalculationContext(
-                        p, view, loaded, safe, s, denied, permit, targetByPos,
-                        inv.availableStates(true), r.replaceExisting));
+    public RouteSpec spec() {
+        return SPEC;
     }
 
     @Override
-    public CalculationContext forExecution(NumenPlayer player, LongSet sacred, LongSet deniedPlace) {
-        return ContextFactory.forExecution(player, union(sacred), union(deniedPlace), permit(),
-                (p, view, loaded, safe, s, denied, permit) -> new BuildCalculationContext(
-                        p, view, loaded, safe, s, denied, permit, targetByPos,
-                        inv.availableStates(true), r.replaceExisting));
+    public CalculationContext forSearch(NumenPlayer player, RouteSpec spec) {
+        return ContextFactory.forSearch(player, withSite(spec), this::buildContext);
     }
 
-    /** 施工就是改地形:挖错块、搭脚手架、被自己封顶时拆一块出去,都是这个任务的本分。 */
     @Override
-    public com.dwinovo.numen.core.pathing.moves.TerrainPermit permit() {
-        return com.dwinovo.numen.core.pathing.moves.TerrainPermit.TERRAFORM;
+    public CalculationContext forExecution(NumenPlayer player, RouteSpec spec) {
+        return ContextFactory.forExecution(player, withSite(spec), this::buildContext);
+    }
+
+    private CalculationContext buildContext(ServerPlayer player, BlockGetter view, ChunkLoadedTest loaded,
+                                            boolean safeForThreadedUse, RouteSpec spec, Gate gate) {
+        return new BuildCalculationContext(player, view, loaded, safeForThreadedUse, spec, gate,
+                targetByPos, inv.availableStates(true), r.replaceMode.mayReplace());
     }
 
     @Override
@@ -1396,8 +1509,51 @@ public final class BuildCompanionTask extends AbstractCompanionTask<BuildTaskRec
     protected void cleanup() {
         super.cleanup();
         unregisterProvider();
+        registerBuiltCells();
         InputDriver.halt(player);
         player.setShiftKeyDown(false);
+    }
+
+    /**
+     * 成果格登记进放置记录,记在主人名下:她盖的墙从此是主人的东西,下一次寻路、挖矿要动它得先问。
+     * 收工时登记,任务怎么结束都登记——半栋房子也是主人的半栋房子。双格方块的另一半
+     * (门上半、床头)由主半带出来,一并登记。她放置时经过的 {@code BlockItem.place}
+     * 把这些格记在她自己名下,这里是把成果交回主人的那一步。
+     */
+    private void registerBuiltCells() {
+        if (!(player.level() instanceof net.minecraft.server.level.ServerLevel level)) {
+            return;
+        }
+        PlacedBlocks placed = PlacedBlocks.of(level);
+        PlacedBlocks.Placer owner = ownerAsPlacer(level);
+        for (BuildTaskRecord.Target target : r.targets) {
+            if (BuildCellRules.isAirTarget(target) || !level.isLoaded(target.pos())) {
+                continue;
+            }
+            if (!target.matches(level.getBlockState(target.pos()))) {
+                continue;
+            }
+            placed.record(target.pos(), owner);
+            BlockPos other = BuildCellRules.otherHalfOf(target.pos(), target.desiredState());
+            if (other != null && !level.getBlockState(other).isAir()) {
+                placed.record(other, owner);
+            }
+        }
+    }
+
+    /** 主人作为放的人:名字取在线的主人,不在线取服务器记着的档案;都查不到名字为空串(说成"玩家放的")。 */
+    private PlacedBlocks.Placer ownerAsPlacer(net.minecraft.server.level.ServerLevel level) {
+        java.util.UUID id = player.getOwnerUuid();
+        if (id == null) {
+            return PlacedBlocks.Placer.UNKNOWN;
+        }
+        net.minecraft.server.level.ServerPlayer online = player.resolveOwnerPlayer();
+        String name = online != null ? online.getGameProfile().getName()
+                : java.util.Optional.ofNullable(level.getServer().getProfileCache())
+                        .flatMap(cache -> cache.get(id))
+                        .map(com.mojang.authlib.GameProfile::getName)
+                        .orElse("");
+        return new PlacedBlocks.Placer(id, name);
     }
 
     /**

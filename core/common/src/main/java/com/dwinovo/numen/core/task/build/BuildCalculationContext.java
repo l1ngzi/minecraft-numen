@@ -4,11 +4,11 @@ import com.dwinovo.numen.core.build.BuildValidity;
 import com.dwinovo.numen.core.pathing.moves.CalculationContext;
 import com.dwinovo.numen.core.pathing.moves.ChunkLoadedTest;
 import com.dwinovo.numen.core.pathing.moves.MovementHelper;
-import com.dwinovo.numen.core.pathing.moves.TerrainPermit;
 import com.dwinovo.numen.core.pathing.settings.NavSettings;
-import com.dwinovo.numen.core.pathing.util.BlockHelper;
+import com.dwinovo.numen.core.pathing.spec.RouteSpec;
+import com.dwinovo.numen.permission.Action;
+import com.dwinovo.numen.permission.Gate;
 
-import it.unimi.dsi.fastutil.longs.LongSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.BlockGetter;
@@ -26,15 +26,13 @@ final class BuildCalculationContext extends CalculationContext {
     private final Set<BlockState> availableStates;
     private final boolean replaceExisting;
     BuildCalculationContext(ServerPlayer player, BlockGetter view, ChunkLoadedTest loadedTest,
-                            boolean safeForThreadedUse, LongSet sacred, LongSet deniedPlace,
-                            TerrainPermit permit,
+                            boolean safeForThreadedUse, RouteSpec spec, Gate gate,
                             Map<Long, BuildTaskRecord.Target> activeTargets,
                             Set<BlockState> availableStates, boolean replaceExisting) {
-        super(player, view, loadedTest, safeForThreadedUse, sacred, deniedPlace, permit);
+        super(player, view, loadedTest, safeForThreadedUse, spec, gate);
         this.activeTargets = Map.copyOf(activeTargets);
         this.availableStates = Set.copyOf(availableStates);
         this.replaceExisting = replaceExisting;
-        this.jumpPenalty += 10.0;
         this.backtrackCostFavoringCoefficient = 1.0;
     }
 
@@ -43,7 +41,7 @@ final class BuildCalculationContext extends CalculationContext {
         long key = BlockPos.asLong(x, y, z);
         BuildTaskRecord.Target target = activeTargets.get(key);
         if (target != null) {
-            if (sacred.contains(key) || deniedPlace.contains(key)) {
+            if (spec.positions().place(key) >= COST_INF) {
                 return COST_INF;
             }
             if (!MovementHelper.placeableWithinBorder(worldBorder, x, z)) {
@@ -51,7 +49,7 @@ final class BuildCalculationContext extends CalculationContext {
             }
             if (target.block() instanceof net.minecraft.world.level.block.AirBlock) {
                 // 目标应为空气却被问能否在此放置(脚手架):恒计"放错块"有限成本,迟早还要挖掉。
-                return placeBlockCost * NavSettings.get().placeIncorrectBlockPenaltyMultiplier;
+                return spec.placeCost() * NavSettings.get().placeIncorrectBlockPenaltyMultiplier;
             }
             if (target.matches(current)) {
                 return COST_INF;
@@ -61,7 +59,7 @@ final class BuildCalculationContext extends CalculationContext {
                 return 0.0;
             }
             return hasThrowaway
-                    ? placeBlockCost * 1.5 * NavSettings.get().placeIncorrectBlockPenaltyMultiplier
+                    ? spec.placeCost() * 1.5 * NavSettings.get().placeIncorrectBlockPenaltyMultiplier
                     : COST_INF;
         }
         return super.costOfPlacingAt(x, y, z, current);
@@ -79,10 +77,11 @@ final class BuildCalculationContext extends CalculationContext {
     @Override
     public double breakCostMultiplierAt(int x, int y, int z, BlockState current) {
         long key = BlockPos.asLong(x, y, z);
-        if (sacred.contains(key)) {
+        if (spec.positions().dig(key) >= COST_INF) {
             return COST_INF;
         }
-        if (BlockHelper.shouldAvoidBreaking(view, new BlockPos(x, y, z))) {
+        double permitted = permissionMultiplier(Action.breakBlock(new BlockPos(x, y, z), current));
+        if (permitted >= COST_INF) {
             return COST_INF;
         }
         if (!allowBreak && !allowBreakAnyway.contains(current.getBlock())) {
@@ -102,9 +101,9 @@ final class BuildCalculationContext extends CalculationContext {
                 // 于是搜不出任何出路,只能返回半程路径让她原地打转——实测整栋
                 // 房子就卡死在这里。取值参照:圆石徒手约十余刻,乘 8 约合绕行
                 // 百格,足以让任何真实通路胜出,又不至于把"拆一块"排除在外。
-                return 8.0;
+                return 8.0 * permitted;
             }
-            return replaceExisting ? 1.0 : COST_INF;
+            return replaceExisting ? permitted : COST_INF;
         }
         return super.breakCostMultiplierAt(x, y, z, current);
     }

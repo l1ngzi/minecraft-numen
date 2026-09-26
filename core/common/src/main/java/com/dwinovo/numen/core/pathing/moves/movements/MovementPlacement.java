@@ -67,17 +67,6 @@ final class MovementPlacement {
     private static final com.dwinovo.numen.core.pathing.execute.AimProcessor AIM =
             new com.dwinovo.numen.core.pathing.execute.AimProcessor();
 
-    /** 放置可行性回退的六个面中心系数(先方块中心,再六面心)。 */
-    private static final double[][] FACE_OFFSETS = {
-            {0.5, 0.5, 0.5}, // 中心
-            {0.5, 0.0, 0.5}, // 下
-            {0.5, 1.0, 0.5}, // 上
-            {0.5, 0.5, 0.0}, // 北
-            {0.5, 0.5, 1.0}, // 南
-            {0.0, 0.5, 0.5}, // 西
-            {1.0, 0.5, 0.5}  // 东
-    };
-
     /** 以玩家当前视角作为"当前转角"的便捷入口。 */
     static PlaceResult attemptToPlaceABlock(MovementState state, ServerPlayer player,
                                             BlockPos placeAt, boolean preferDown, boolean wouldSneak) {
@@ -100,19 +89,28 @@ final class MovementPlacement {
     static PlaceResult attemptToPlaceABlock(MovementState state, ServerPlayer player,
                                             BlockPos placeAt, boolean preferDown, boolean wouldSneak,
                                             float currentYaw, float currentPitch) {
-        BuildPlacementRegistry.recordScaffold(player, placeAt);
         Level level = player.level();
-        double reach = NavSettings.get().blockReachDistance;
+        // 放置落点先过权限层(耗材还没选,按"放什么都一样"问):不许放就没有可行贴面,
+        // 状态机按够不着收场、重新规划——成本模型同一份裁决早已把这格定成 INF,走到这里
+        // 只可能是规划之后世界变了。
+        if (!com.dwinovo.numen.permission.Permission.judge(
+                (com.dwinovo.numen.entity.NumenPlayer) player,
+                com.dwinovo.numen.permission.Action.place(placeAt, level.getBlockState(placeAt), null))
+                .allowed()) {
+            state.setStatus(MovementStatus.UNREACHABLE);
+            return PlaceResult.NO_OPTION;
+        }
+        BuildPlacementRegistry.recordScaffold(player, placeAt);
+        double reach = com.dwinovo.numen.platform.Services.PLATFORM.blockInteractionRange(player);
         Vec3 eye = eyePosition(player, wouldSneak);
         boolean found = false;
         BlockHitResult foundHit = null;
         float foundYaw = currentYaw;
         float foundPitch = currentPitch;
 
-        // 直视 placeAt 本体(走到这一步说明该格必是可替换的)。中心不可视
-        // 时回退到方块碰撞形状的六面心,用 peek 后的实际转角做 raytrace。
-        for (double[] off : FACE_OFFSETS) {
-            Vec3 aim = shapePoint(level, placeAt, off[0], off[1], off[2]);
+        // 直视 placeAt 本体(走到这一步说明该格必是可替换的):按瞄点次序逐一试,
+        // 用 peek 后的实际转角做 raytrace。
+        for (Vec3 aim : AimGeometry.aimPoints(level, placeAt, level.getBlockState(placeAt))) {
             float yaw = AimGeometry.yawTo(eye, aim);
             float pitch = AimGeometry.pitchTo(eye, aim);
             com.dwinovo.numen.core.pathing.execute.AimProcessor.Rotation peek =
@@ -230,18 +228,6 @@ final class MovementPlacement {
         return !off.isEmpty() && acceptable.contains(off.getItem());
     }
 
-    /** 方块碰撞形状上按 (mx,my,mz) 比例取点;空形状退回满格方块。 */
-    private static Vec3 shapePoint(Level level, BlockPos pos, double mx, double my, double mz) {
-        net.minecraft.world.phys.shapes.VoxelShape shape = level.getBlockState(pos).getShape(level, pos);
-        if (shape.isEmpty()) {
-            shape = net.minecraft.world.phys.shapes.Shapes.block();
-        }
-        double x = shape.min(Direction.Axis.X) * mx + shape.max(Direction.Axis.X) * (1 - mx);
-        double y = shape.min(Direction.Axis.Y) * my + shape.max(Direction.Axis.Y) * (1 - my);
-        double z = shape.min(Direction.Axis.Z) * mz + shape.max(Direction.Axis.Z) * (1 - mz);
-        return new Vec3(pos.getX() + x, pos.getY() + y, pos.getZ() + z);
-    }
-
     /**
      * 找可垫路耗材并(可选)切到该槽。外层按 NavSettings.acceptableThrowawayItems
      * 的配置优先级顺序遍历物品种类(默认泥土/圆石/下界岩/石头),内层扫
@@ -318,7 +304,7 @@ final class MovementPlacement {
     /** 玩家当前视线是否命中该方块(轮廓射线,不穿流体)。 */
     static boolean isLookingAt(ServerPlayer player, BlockPos pos) {
         BlockHitResult hit = rayTrace(player, player.getEyePosition(),
-                player.getYRot(), player.getXRot(), NavSettings.get().blockReachDistance);
+                player.getYRot(), player.getXRot(), com.dwinovo.numen.platform.Services.PLATFORM.blockInteractionRange(player));
         return hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(pos);
     }
 

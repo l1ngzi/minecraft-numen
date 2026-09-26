@@ -2,6 +2,7 @@ package com.dwinovo.numen.plugins.ysm;
 
 import com.dwinovo.numen.api.CompanionEvent;
 import com.dwinovo.numen.api.NumenPlugins;
+import com.dwinovo.numen.task.TaskFactory;
 
 import java.nio.file.Path;
 
@@ -28,9 +29,9 @@ public final class NumenYsm {
         OwnerSync sync = new OwnerSync(ysm);
 
         NumenPlugins.register(numen -> {
-            numen.registerTool(new ListOptionsTool(ysm));
-            numen.registerTool(new SwitchModelTool(ysm));
-            numen.registerTool(new PlayEmoteTool(ysm));
+            YsmCommands.install(numen, ysm);
+            // numen ysm switch 派下来的换装由谁来跑
+            TaskFactory.register(SwitchRecord.class, (player, record) -> new SwitchTask(ysm, record));
 
             if (skillsRoot != null) numen.bundleSkills(skillsRoot);
 

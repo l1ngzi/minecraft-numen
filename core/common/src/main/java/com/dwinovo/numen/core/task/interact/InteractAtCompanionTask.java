@@ -6,11 +6,11 @@ import com.dwinovo.numen.task.TaskState;
 import com.dwinovo.numen.entity.InputDriver;
 
 import com.dwinovo.numen.entity.NumenPlayer;
-import com.dwinovo.numen.core.pathing.calc.NavGoal;
 import com.dwinovo.numen.core.FailureType;
 import com.dwinovo.numen.core.act.Interaction;
 import com.dwinovo.numen.core.act.PressReceipt;
 import com.dwinovo.numen.core.pathing.execute.PlayerNav;
+import com.dwinovo.numen.core.pathing.moves.AimGeometry;
 import com.dwinovo.numen.core.task.base.GoToThenDoTask;
 import com.dwinovo.numen.core.task.base.Precondition;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -31,23 +31,14 @@ import java.util.Map;
  */
 public final class InteractAtCompanionTask extends GoToThenDoTask<InteractAtTaskRecord> {
 
-    private static final double REACH = 4.5;
-    private static final double REACH_SQR = REACH * REACH;
-    private static final double WALK_SPEED = 1.0;
-    /** Reposition-rung stance radius: any feet cell this close to the aim (< {@link #REACH},
-     *  so an accepted stance is still within interact reach). Never wider than the goal. */
-
     private Interaction interaction;
     /** 按键前的世界快照,收尾时对账出"真发生了什么"(见 {@link PressReceipt})。 */
     private PressReceipt receipt;
     private java.util.List<String> changes = List.of();
-    // ---- bounded recovery state (fields, so a Suspendable mid-rung suspend/resume
-    //      picks straight back up: the counter and the rebuilt nav both survive) ----
-    /** The FIRST nav failure's reason, preserved so the final give-up keeps the original wording. */
     private long holdUntil = -1;       // game tick to release a fixed-duration hold (holdTicks > 0)
     private String successMsg = "done";
     // A right-click that activated a real block (a station's GUI): captured so the
-    // result can report it and the agent loop can remember it in <known_blocks>.
+    // result names it — whether that station is worth a note is hers to decide.
     private net.minecraft.core.BlockPos activatedBlock;
     private String activatedBlockId;
 
@@ -88,10 +79,13 @@ public final class InteractAtCompanionTask extends GoToThenDoTask<InteractAtTask
             if (r.item != null) {
                 player.holdInHand(PlayerInv.findSlot(player.getInventory(), r.item));
             }
+            // 看向目标上真能射到的那一点(拉杆、开着的门只占格子的一角,格心可能是空的);一点都看不见
+            // 时看格心,下面的准星就点名挡着的那一块。空气与流体本来就没有可射中的轮廓,也看格心
             if (r.aim != null) {
-                InputDriver.lookAt(player, Vec3.atCenterOf(r.aim));
+                var visible = AimGeometry.visibleHit(player, r.aim, com.dwinovo.numen.platform.Services.PLATFORM.blockInteractionRange(player));
+                InputDriver.lookAt(player, visible != null ? visible.getLocation() : Vec3.atCenterOf(r.aim));
             }
-            HitResult hit = Interaction.nativeRaytrace(player, REACH);
+            HitResult hit = Interaction.nativeRaytrace(player, com.dwinovo.numen.platform.Services.PLATFORM.blockInteractionRange(player));
             // 目标格本身是实心方块、而准星实际落在别的方块上 = 被遮挡:
             // 拒绝并点名遮挡物(点下去只会交互到错误对象还谎报成功)。
             // 目标格是空气或流体的瞄点保持准星穿透语义——流体本来就不该被准星
@@ -103,12 +97,20 @@ public final class InteractAtCompanionTask extends GoToThenDoTask<InteractAtTask
                     && hit instanceof net.minecraft.world.phys.BlockHitResult blockedHit
                     && !blockedHit.getBlockPos().equals(r.aim)) {
                 var blocker = blockedHit.getBlockPos();
-                String blockerId = BuiltInRegistries.BLOCK
-                        .getKey(player.level().getBlockState(blocker).getBlock()).getPath();
+                var blockerState = player.level().getBlockState(blocker);
+                String blockerId = BuiltInRegistries.BLOCK.getKey(blockerState.getBlock()).getPath();
+                // 挡着的方块要不要主人同意,权限层说;回执只转述,不出主意去拆
+                var verdict = com.dwinovo.numen.permission.Permission.judge(player,
+                        com.dwinovo.numen.permission.Action.breakBlock(blocker, blockerState));
+                String blockerNote = switch (verdict.kind()) {
+                    case ALLOW -> "Breaking that blocker needs no consent.";
+                    case ASK -> "Breaking that blocker needs the owner's consent (" + verdict.cause() + ").";
+                    case DENY -> "Breaking that blocker is refused (" + verdict.cause() + ").";
+                };
                 fail("aim " + aimLabel() + " is blocked from here — the crosshair lands on "
                         + blockerId + " at " + blocker.getX() + "," + blocker.getY() + ","
-                        + blocker.getZ() + " instead. break_block that blocker, or goto the"
-                        + " target's open side, then retry.", FailureType.OCCLUDED);
+                        + blocker.getZ() + " instead. " + blockerNote + " goto the target's"
+                        + " open side, then retry.", FailureType.OCCLUDED);
                 return TaskState.FAILED;
             }
             // A consumable / ender pearl used in the AIR is body-bound (would feed or teleport the
@@ -120,10 +122,26 @@ public final class InteractAtCompanionTask extends GoToThenDoTask<InteractAtTask
                     return TaskState.FAILED;
                 }
             }
+            // 按下去之前:这一下要做的事交给权限层(见 proposedActions)。不许就带着理由收场,
+            // 要问就站着等主人
+            List<com.dwinovo.numen.permission.Action> proposed = proposedActions(hit);
+            if (!proposed.isEmpty()) {
+                List<Permit> permits = permitAll(proposed);
+                for (int i = 0; i < permits.size(); i++) {
+                    if (permits.get(i).state() == PermitState.REFUSED) {
+                        fail("cannot " + proposed.get(i).describe() + ": " + permits.get(i).refusal(),
+                                FailureType.REFUSED);
+                        return TaskState.FAILED;
+                    }
+                }
+                if (permits.stream().anyMatch(p -> p.state() == PermitState.WAITING)) {
+                    InputDriver.halt(player);
+                    return TaskState.RUNNING;
+                }
+            }
             // A right-click landing on a block activates it (opens a station's GUI,
-            // flips a switch, …). Remember the block we touched so <known_blocks> can
-            // walk us back to stations we've used, not just ones we placed. The harvest
-            // filters to tracked station types; doors/buttons fall away there.
+            // flips a switch, …). Capture what we touched so the receipt can name it:
+            // she reads it and decides for herself whether to remember the place.
             if (button() == Interaction.Button.USE && hit instanceof net.minecraft.world.phys.BlockHitResult bhr) {
                 activatedBlock = bhr.getBlockPos();
                 activatedBlockId = BuiltInRegistries.BLOCK
@@ -157,20 +175,45 @@ public final class InteractAtCompanionTask extends GoToThenDoTask<InteractAtTask
                 yield TaskState.SUCCESS;
             }
             case FAILED -> {
-                fail(interaction.failReason(), FailureType.UNKNOWN);
+                fail(interaction.failReason(), interaction.failType());
                 yield TaskState.FAILED;
             }
             case RUNNING -> TaskState.RUNNING;
         };
     }
 
-
-    /** In-ladder nav causes the reposition rung handles; anything else kicks straight back to the LLM. */
-    private static boolean repositionable(FailureType type) {
-        return type == FailureType.NO_PATH || type == FailureType.TERRAIN_BLOCKED
-                || type == FailureType.BOXED_IN
-                || type == FailureType.OUT_OF_REACH || type == FailureType.STANCE_DUD;
+    /**
+     * 这一下按在哪儿就是要做什么:左键方块是挖、左键实体是打;右键方块是 {@code use_block}、右键实体是
+     * {@code use_entity}。落在空气里的不对着世界里的谁,不是权限层的动作。
+     */
+    /**
+     * 准星落点上这一下要做的事:左键是挖、打;右键是右键方块、右键实体。右键方块时方块不吃这一下就轮到
+     * 手里的东西,两只手里会往世界里放东西的({@link Interaction#placementOf})也一并算上。
+     */
+    private List<com.dwinovo.numen.permission.Action> proposedActions(HitResult hit) {
+        boolean left = button() == Interaction.Button.ATTACK;
+        if (hit instanceof net.minecraft.world.phys.BlockHitResult bh && hit.getType() == HitResult.Type.BLOCK) {
+            var state = player.level().getBlockState(bh.getBlockPos());
+            if (left) {
+                return List.of(com.dwinovo.numen.permission.Action.breakBlock(bh.getBlockPos(), state));
+            }
+            List<com.dwinovo.numen.permission.Action> out = new java.util.ArrayList<>();
+            out.add(com.dwinovo.numen.permission.Action.useBlock(bh.getBlockPos(), state));
+            for (var hand : net.minecraft.world.InteractionHand.values()) {
+                var placing = Interaction.placementOf(player.level(), bh, player.getItemInHand(hand));
+                if (placing != null) {
+                    out.add(placing);
+                }
+            }
+            return out;
+        }
+        if (hit instanceof net.minecraft.world.phys.EntityHitResult eh) {
+            return List.of(left ? com.dwinovo.numen.permission.Action.attack(eh.getEntity())
+                    : com.dwinovo.numen.permission.Action.useEntity(eh.getEntity()));
+        }
+        return List.of();
     }
+
 
     private Interaction.Button button() {
         return r.button == MouseButton.LEFT
@@ -178,7 +221,7 @@ public final class InteractAtCompanionTask extends GoToThenDoTask<InteractAtTask
     }
 
     private boolean withinReach() {
-        return bodySettled() && player.distanceToSqr(Vec3.atCenterOf(r.aim)) <= REACH_SQR;
+        return bodySettled() && com.dwinovo.numen.platform.Services.PLATFORM.canInteractWithBlock(player, r.aim, 0.0);
     }
 
     private String aimLabel() {
@@ -221,7 +264,7 @@ public final class InteractAtCompanionTask extends GoToThenDoTask<InteractAtTask
             data.put("z", r.aim.getZ());
         }
         // Report the activated station (and its exact position, authoritative over the
-        // raw aim) so the agent loop can harvest it into <known_blocks>.
+        // raw aim): she can only note a place we told her about.
         if (activatedBlock != null) {
             data.put("block", activatedBlockId);
             data.put("x", activatedBlock.getX());

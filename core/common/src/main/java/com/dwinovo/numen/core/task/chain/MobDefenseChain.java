@@ -145,7 +145,7 @@ public final class MobDefenseChain implements Task, Reflex {
         com.dwinovo.numen.Constants.LOG.info("[numen-defense] 收场 {} —— {}", state, line);
         // <b>不急</b>:她的后台任务照跑,黄了自有 task_finished 报。这条只是让主人翻聊天流时
         // 看得懂她刚才为什么打了一架、或者挪了二十格。攒着搭下一轮的车就够。
-        com.dwinovo.numen.event.NumenEvents.body(companion,
+        com.dwinovo.numen.event.NumenEvents.reflex(companion, this,
                 "hit danger and handled it on instinct — " + line);
     }
 
@@ -192,6 +192,12 @@ public final class MobDefenseChain implements Task, Reflex {
         List<Mob> near = new ArrayList<>();
         for (Mob m : Menace.hostilesAround(companion, SCAN_RADIUS)) {
             if (m != attacker && m.getTarget() != companion) {
+                continue;
+            }
+            // 本能开打也要过权限层:一只有名字的僵尸追着她,没有主人点头就不是一场能打的仗
+            // ——开了也是 attack 在局面里把它剔掉、当场收场、下一刻再开,循环打转。
+            if (!com.dwinovo.numen.permission.Permission.judge(companion,
+                    com.dwinovo.numen.permission.Action.attack(m)).allowed()) {
                 continue;
             }
 

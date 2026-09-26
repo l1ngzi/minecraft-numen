@@ -24,7 +24,8 @@ class BestSoFarSelectionTest {
         }
 
         @Override
-        protected Optional<NavPath> calculate0(long primaryTimeout, long failureTimeout) {
+        protected Optional<NavPath> calculate0(int primaryNodes, int failureNodes) {
+            stop = PathCalcResult.Stop.EXHAUSTED;   // 什么都不展开:走得到的(一个也没有)都搜过了
             return Optional.empty();
         }
     }

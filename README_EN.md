@@ -8,8 +8,8 @@
 
 [**English**](README_EN.md) · [简体中文](README.md)
 
-![Minecraft](https://img.shields.io/badge/Minecraft-1.20.1%20~%2026.1.2-62B47A?style=flat-square)
-![Loaders](https://img.shields.io/badge/Loaders-Fabric%20%7C%20Forge%20%7C%20NeoForge-DE7C36?style=flat-square)
+![Minecraft](https://img.shields.io/badge/Minecraft-1.20.1%20~%2026.2-62B47A?style=flat-square)
+![Loaders](https://img.shields.io/badge/Loaders-Fabric%20%7C%20NeoForge%20%7C%20Forge%20%E2%89%A41.20.4-DE7C36?style=flat-square)
 ![Java](https://img.shields.io/badge/Java-17%20%7C%2021%20%7C%2025-007396?style=flat-square&logo=openjdk&logoColor=white)
 ![License](https://img.shields.io/badge/code-LGPL--3.0-A8731E?style=flat-square)
 
@@ -26,6 +26,8 @@
 Numen puts an AI companion in your world. Tell it what you want in plain language — type it, or hold `V` and just say it, in any language your model speaks — and it breaks the goal into dozens of steps, plans a route, picks the right tool, adapts when things go wrong, and gets it done.
 
 It isn't a chatbot NPC. It's a real player on the server: it mines, walks, swings, opens chests, and every action goes through the vanilla player code path — which means it plays by the same rules as redstone, mob AI, and everyone else's mods.
+
+It can also get better at things. Write a Markdown file to teach it a new way to play; write a plugin to wire in Create or AE2. [Both are things the community can write](#extending-it).
 
 ```
 You:    Go get me a stack of iron
@@ -67,7 +69,7 @@ Numen:  Got 64 raw iron — want me to smelt it?
 Close to thirty tools make up its hands and eyes right now:
 
 - ⛏️ **Work** — mining, logging, gathering, building, precise placement and breaking, crafting from recipes, smelting in furnaces, and sorting loot into chests.
-- 🧭 **Movement** — a server-side pathfinding engine that jumps, swims, climbs, opens doors, parkours and pilots boats, and can bridge gaps, pillar up, tunnel through and staircase down. Walking never alters the world by default — walls, floors, other people's builds and the landscape stay as they were; when the only route would need digging or bridging it lists exactly which blocks, and only proceeds once the model consents (`may_alter_terrain`). Every result reports what was actually broken or placed en route.
+- 🧭 **Movement** — a server-side pathfinding engine that jumps, swims, climbs, opens doors, parkours and pilots boats, and can bridge gaps, pillar up, tunnel through and staircase down. Walking never alters the world by default — walls, floors, other people's builds and the landscape stay as they were; when there is no clean route it lists priced candidate routes (what each would break or place) and only proceeds once the model picks one (`goto route:<id>`) or another destination; `plan_route` prices routes without walking them. Every result reports what was actually broken or placed en route.
 - ⚔️ **Combat** — vanilla player melee and archery, with real cooldowns and real crits; it eats when hurt and swims up when it's about to drown.
 - 🔭 **Perception** — scan blocks, scan entities, query state, look up recipes, locate structures and biomes, and read what's inside a machine without opening its GUI.
 - 🗣️ **Voice** — speech in, speech out, plus a persona, a skin, and a voice you pick yourself.
@@ -75,17 +77,17 @@ Close to thirty tools make up its hands and eyes right now:
 
 ## Extending it
 
-How deep a companion can go comes down to three things, and they are nowhere near equally hard.
+A companion is a real player, so it mines and places a mod's blocks, opens and empties a mod's containers, and reads what a machine holds without opening its screen wherever standard capabilities are exposed. That much works on install; nothing has to be adapted.
 
-**Whether it can touch it — already universal.** The companion is a real player, so it can break, place, and right-click a mod's blocks, open and move items through a mod's containers, and read the items, fluids, and energy inside any machine that exposes the standard capabilities. This layer needs no per-mod adaptation at all; it works the moment you install the mod.
+What it doesn't know is how to play. AE2 channels have to be counted, Create's whole line stalls once stress goes over, some things only pay off past a certain tier. None of that can be read out. It has to be taught.
 
-**Whether it knows what a thing is — mostly free.** Recipes, tags, and item names are data that gets synced to the client, and mods live in that same system. "What does this machine consume and produce" is, for a good share of mods, already readable.
+There are two ways to teach it, and the community can write both.
 
-**Whether it knows how to play — this one is on us.** AE2 channels have to be budgeted, Create's stress will stall a whole line if you exceed it, some things only make sense after a tier upgrade. None of that lives in a data structure — it can't be read out, it has to be written down. That's what a **Skill** is: a Markdown workflow under `config/numen/skills/`, loaded only when relevant so the prompt stays lean. No code, anyone can write one. A set of examples ships with the mod (Nether, blaze rods, ender pearls, strongholds, the dragon fight); edit one or write your own to teach it your base's conventions or a new mod's gameplay.
+**A skill** is one Markdown file. Write down your base's house rules, or how a mod is played, drop it in `config/numen/skills/`, done. No code. Five examples ship with the mod: the Nether, blaze rods, ender pearls, strongholds, the dragon. Editing one is the fastest way in.
 
-When words aren't enough, you can hand it tools directly: a mod author registers one through `NumenGateway`, or you attach any Model Context Protocol server from the **MCP** settings page (stdio or HTTP, OAuth supported). Tools arriving either way are treated exactly like built-in ones. A tool hands it a hammer; a Skill teaches it how to swing.
+**A plugin** is a mod that wires another mod in. Install the Create plugin and the companion knows how to use Create; install the AE2 one and it understands AE2. A plugin does two things: it registers tools through `NumenGateway` (say, "read what's inside this machine"), and it can ship skills inside its own jar. Installing your plugin gives players the tools and the know-how together. See [For developers](#for-developers) for how to write one.
 
-The first two layers are one-time engineering. The third keeps growing, and that takes a community. We're not going to pretend it will ever be finished.
+> The **MCP** page in settings can hook up an external Model Context Protocol server, and its tools count the same as built-in ones. That is for wiring yourself into services that already exist. Adapting a mod can't wait on that mod shipping an MCP server; that takes a plugin.
 
 ## External brain
 
@@ -118,7 +120,7 @@ On top of all that, **the brain runs on your own machine**: the agent loop lives
 
 ## For developers
 
-Every tool and every skill Numen ships with is written against the public API — there are no private back channels. Any mod author gets the same capabilities:
+Every tool and every skill Numen ships with is written against the public API — there are no private back channels. **Writing a [plugin](#extending-it) gets you the same capabilities**:
 
 - 🔧 **Register a tool through `NumenGateway`** and your mod's capabilities become part of the AI's hands. The tool contract deliberately contains no Minecraft concepts — how a call completes (synchronously, asynchronously, sending its own packets, calling an external web service) is entirely up to the tool. That's why the same API reaches a chat platform as comfortably as it reaches an ore vein.
 - 📖 **Ship skills inside your jar** — one call turns your jar's `/skills` directory into built-in skills, so players who install your mod get an AI that already knows how to play it.
@@ -128,16 +130,18 @@ The engine (`api/`) lives in this repository under `api/`, and is still publishe
 
 ```gradle
 repositories { maven { url = 'https://raw.githubusercontent.com/Dwinovo/numen-maven/main' } }
-dependencies  { modImplementation "com.dwinovo.numen:numen-api-fabric-1.20.1:<version>" }
+dependencies  { modCompileOnly "com.dwinovo.numen:numen-api-fabric-1.20.1:<version>:api" }
 ```
 
-The public integration API is **MIT** licensed — write tools, skills, and compat without being dragged into LGPL.
+The line differs per loader, and changing engine mechanics means depending on core instead — see [api/README_EN](api/README_EN.md#depend-on-it).
 
-Building it yourself: clone the repo and run `./gradlew :core:fabric:build` (or `:core:neoforge:build`). Bugs, ideas, and compat experiments are all welcome — [open an issue](https://github.com/Dwinovo/minecraft-numen/issues), or write a skill and send a PR.
+Plugins and compatibility mods may use any license, including proprietary: work distributed separately that uses Numen through its API is not bound by the LGPL.
+
+Building it yourself: clone the repo and run `./gradlew :core:fabric:build` (or `:core:forge:build`). Bugs, ideas, and compat experiments are all welcome — [open an issue](https://github.com/Dwinovo/minecraft-numen/issues), or write a skill and send a PR.
 
 ## Roadmap
 
-- **Adapting the big mods.** Create, AE2, Mekanism and other tech mods that are universes unto themselves have to be adapted one at a time — registering tools, writing skills, wiring up MCP, whichever fits. The mod ecosystem is far too large for any single mechanism to cover it. `inspect_block_storage` is the first brick.
+- **Adapting the big mods.** Create, AE2, Mekanism and other tech mods that are universes unto themselves have to be adapted one at a time — [a plugin plus skills](#extending-it), one workflow per mod. `inspect_block_storage` is the first brick.
 - **Growing a skill library.** Make "teach the AI a new mod" as simple as writing one Markdown file, built and shared by the community.
 - **Playing more like a veteran.** Deeper world memory and longer-horizon planning.
 
@@ -147,10 +151,10 @@ Building it yourself: clone the repo and run `./gradlew :core:fabric:build` (or 
 
 <sub>Want to build it yourself, see the full tool list, or read the architecture? It's all in the source — start under <code>core/common/src/main/java/com/dwinovo/numen/</code>.</sub>
 
-<sub><b>Licensing</b>: the source code is <a href="LICENSE">LGPL-3.0</a> — forks you distribute must stay open under the same license. The public integration API (what compatibility modules / MCP bridges code against) is <a href="LICENSE-API">MIT</a>, so anyone can build mod-compat freely. The art &amp; assets are <a href="LICENSE-ASSETS">All Rights Reserved</a>, and the names "Numen" / "言出法随" are reserved. Built on the <a href="https://github.com/jaredlll08/MultiLoader-Template">MultiLoader Template</a>.</sub>
+<sub><b>Licensing</b>: the source code is <a href="LICENSE">LGPL-3.0</a> — forks you distribute must stay open under the same license; plugins and compatibility mods distributed separately that use Numen through its API may use any license, including proprietary. The art &amp; assets are <a href="LICENSE-ASSETS">All Rights Reserved</a>, and the names "Numen" / "言出法随" are reserved. Built on the <a href="https://github.com/jaredlll08/MultiLoader-Template">MultiLoader Template</a>.</sub>
 
-<sub>The <b>planning layer</b> implements techniques from the heuristic-search literature: weighted A* with budgeted partial-path commitment (on search timeout the best partial path across several heuristic-coefficient tiers is committed), with game-independent unit tests. The <b>path-following layer</b> advances movement primitive by movement primitive along the computed path: windowed backward/forward relocation, seamless segment splicing and over-length cutoff, in-flight cost re-verification with an off-path watchdog, plus a set of sprint-decision heuristics. The <b>execution layer</b> differs from <a href="https://github.com/cabaletta/baritone">Baritone</a> fundamentally in where it runs: Baritone is a client-side mod driving the local player, while Numen drives a <b>server-side fake player</b> — movement, digging and placement all go through server APIs. It draws on Baritone's publicly documented mechanics for design ideas only; <b>no source was copied, ported, or adapted from it</b>. Numen's code is licensed LGPL-3.0 of its own accord; that choice is not a consequence of Baritone (which is also LGPL-3.0).</sub>
+<sub>Pathfinding draws on <a href="https://github.com/cabaletta/baritone">Baritone</a>'s publicly documented mechanics (weighted A*, partial-path commitment, in-flight cost re-verification), but Baritone is a client-side mod driving the local player while Numen drives a server-side fake player, with movement, digging and placement all going through server APIs. <b>No source was copied, ported, or adapted from it</b>; the LGPL-3.0 licence is Numen's own choice, not a consequence of Baritone's.</sub>
 
-<sub>The <b>spatial representation</b> fed to the model is an egocentric semantic character grid rather than a list of raw coordinates: the voxels around the player are discretized and semantically pooled into a character matrix centred on the companion itself. The effectiveness of this format follows Gao et al., <i>Exploring Spatial Representation to Enhance LLM Reasoning in Aerial Vision-Language Navigation</i> (arXiv:2410.08500, 2024), whose ablations show that, for the same textual input budget, a semantic-topological-metric grid matrix substantially outperforms both topological graphs and bearing-distance descriptions, and does far better than feeding images directly. Numen adopts its "egocentric + discretized + semantically pooled" formatting principle and adapts it to three dimensions for the verticality of a block world (layered slices / height information).</sub>
+<sub>The spatial representation fed to the model is an egocentric semantic character grid rather than a list of raw coordinates. The formatting principle comes from Gao et al., <i>Exploring Spatial Representation to Enhance LLM Reasoning in Aerial Vision-Language Navigation</i> (arXiv:2410.08500, 2024), adapted to three dimensions for the verticality of a block world.</sub>
 
 </div>

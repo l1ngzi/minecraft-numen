@@ -1,6 +1,7 @@
 package com.dwinovo.numen.core.pathing.execute;
 
 import java.util.Optional;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 import com.dwinovo.numen.core.Constants;
@@ -13,8 +14,8 @@ import com.dwinovo.numen.core.pathing.goals.Goal;
 import com.dwinovo.numen.core.pathing.moves.CalculationContext;
 import com.dwinovo.numen.core.pathing.moves.ChunkLoadedTest;
 import com.dwinovo.numen.core.pathing.moves.Movement;
-import com.dwinovo.numen.core.pathing.moves.TerrainPermit;
 import com.dwinovo.numen.core.pathing.settings.NavSettings;
+import com.dwinovo.numen.core.pathing.spec.RouteSpec;
 import com.dwinovo.numen.entity.NumenPlayer;
 
 import net.minecraft.core.BlockPos;
@@ -28,12 +29,17 @@ import net.minecraft.core.BlockPos;
  * 依次处理暂停/取消请求、在飞搜索合法性、当前段推进、段界分流、提前
  * 接段与拼接、提前规划触发,最后把本 tick 的输入/视角记录提交到实体。
  *
- * <p>独立可实例化:构造只要玩家、搜索派发器与成本上下文工厂,不挂接
+ * <p><b>开走前的放行口</b>:每一段路(首段、接续段、外部采纳的整路)被采纳之前先过
+ * {@code admission};不放行的段扣在 {@link #heldPath} 里——不执行、不再派搜索、不提前规划,
+ * 等调用方 {@link #releaseHeld} 或放弃。执行开始前要问主人的路,就停在这里问。
+ *
+ * <p>独立可实例化:构造只要玩家、搜索派发器、成本上下文工厂与放行口,不挂接
  * 任何任务层。
  */
 public final class PathingCore {
 
     private final NumenPlayer player;
+    private final RouteSpec spec;
     private final ExecHarness harness;
     private final SearchDispatcher dispatcher;
     /**
@@ -49,6 +55,10 @@ public final class PathingCore {
 
     private PathExecutor current;
     private PathExecutor next;
+    /** 算好了、没被放行的那一段:{@link #current} 为空时是首段,否则是接续段。 */
+    private PathExecutor held;
+    /** 一段路能不能开走;不能的扣进 {@link #held}。 */
+    private final Predicate<NavPath> admission;
     /** 连续丢弃孤儿首段的容忍次数;超出即判首段失败,交上层裁决。 */
     private static final int MAX_ORPHAN_DISCARDS = 3;
     private int orphanDiscards;
@@ -69,26 +79,25 @@ public final class PathingCore {
     private boolean safeToCancel = true;
     private boolean cancelRequested;
     private boolean calcFailedLastTick;
+    /** 上一 tick 首段失败时,那次搜索为什么停;失败不是搜索结论(孤儿段、夭折段)时为 null。 */
+    private PathCalcResult.Stop failedStop;
 
+    /**
+     * @param spec      这次导航的路线规格;段起点"脚下能不能站"按它判(两份上下文工厂建出的
+     *                  上下文带的是同一份规格加上按目标变化的位置代价)
+     * @param admission 一段路被采纳之前问:此刻能不能开走
+     */
     public PathingCore(NumenPlayer player, SearchDispatcher dispatcher,
                        Supplier<CalculationContext> searchContextFactory,
                        Supplier<CalculationContext> executionContextFactory,
-                       TerrainPermit permit) {
+                       RouteSpec spec, Predicate<NavPath> admission) {
         this.player = player;
-        this.harness = new ExecHarness(player, permit);
+        this.spec = spec;
+        this.admission = admission;
+        this.harness = new ExecHarness(player);
         this.dispatcher = dispatcher;
         this.searchContextFactory = searchContextFactory;
         this.executionContextFactory = executionContextFactory;
-    }
-
-    /**
-     * 搜索与执行同一份快照的简便构造:执行期复核直接读本次搜索的上下文。
-     * <b>注意</b>:执行期成本复核因此读不到世界变化(快照冻结),生产
-     * 路径必须走双工厂构造(执行侧供活世界上下文),此构造仅限测试。
-     */
-    public PathingCore(NumenPlayer player, SearchDispatcher dispatcher,
-                       Supplier<CalculationContext> contextFactory, TerrainPermit permit) {
-        this(player, dispatcher, contextFactory, null, permit);
     }
 
     // ==================== 对外 API ====================
@@ -105,15 +114,22 @@ public final class PathingCore {
             Constants.LOG.debug("当前段终点不再被新目标认可,软取消");
             softCancelIfSafe();
         }
+        if (held != null && leadsOutOf(held, newGoal)) {
+            held = null;   // 扣着的那段通向的地方已经不算目标了:作废,按新目标重搜
+        }
         this.goal = newGoal;
         if (goal == null) {
             return false;
         }
         BlockPos feet = PathExecutor.playerFeet(player);
-        if (goal.isInGoal(feet.getX(), feet.getY(), feet.getZ())) {
+        // 脚下就在目标里,而且停在这儿的到达价不高于别处的乐观总价:不用搜。脚下那个成员比别处
+        // 贵(脚边是主人的原木、几格外有野树)就照样搜,由搜索按总价挑
+        if (goal.isInGoal(feet.getX(), feet.getY(), feet.getZ())
+                && goal.arrivalCost(feet.getX(), feet.getY(), feet.getZ())
+                        <= goal.heuristic(feet.getX(), feet.getY(), feet.getZ())) {
             return false;
         }
-        if (current != null || inProgress != null) {
+        if (current != null || inProgress != null || held != null) {
             return false;
         }
         expectedSegmentStart = pathStart();
@@ -121,14 +137,56 @@ public final class PathingCore {
         return true;
     }
 
+    /**
+     * 采纳一条已规划好的路径作为首段:目标与路径一并下发,身体从它的起点接着走。
+     * 中途失败照常在本内核的规格下重搜——路径不是可交接的东西,目标加规格才是。
+     * 只在空闲(无段、无在飞搜索)时可调。
+     */
+    public void seed(Goal goal, NavPath path) {
+        if (current != null || inProgress != null || held != null) {
+            throw new IllegalStateException("已有路段或在飞搜索,不能再采纳路径");
+        }
+        this.goal = goal;
+        context = searchContextFactory.get();
+        PathExecutor seeded = newExecutor(path);
+        if (admission.test(path)) {
+            current = seeded;
+        } else {
+            held = seeded;
+        }
+    }
+
     /** 目标失效裁决:当前段终点原本在旧目标内、而不在新目标内。 */
     private boolean goalInvalidatedBy(Goal newGoal) {
-        if (current == null || goal == null || newGoal == null) {
+        return current != null && leadsOutOf(current, newGoal);
+    }
+
+    /** 这段路的终点原本在旧目标内,按新目标停在那儿不再算数(见 {@link Goal#keepsStop})。 */
+    private boolean leadsOutOf(PathExecutor segment, Goal newGoal) {
+        if (goal == null || newGoal == null) {
             return false;
         }
-        BlockPos dest = current.getPath().getDest();
+        BlockPos dest = segment.getPath().getDest();
         return goal.isInGoal(dest.getX(), dest.getY(), dest.getZ())
-                && !newGoal.isInGoal(dest.getX(), dest.getY(), dest.getZ());
+                && !Goal.keepsStop(goal, newGoal, dest.getX(), dest.getY(), dest.getZ());
+    }
+
+    /** 扣着没放行的那一段的路径;没有是 null。 */
+    public NavPath heldPath() {
+        return held == null ? null : held.getPath();
+    }
+
+    /** 放行扣着的那一段:没有在走的段就当首段开走,否则接在当前段后面。 */
+    public void releaseHeld() {
+        if (held == null) {
+            return;
+        }
+        if (current == null) {
+            current = held;
+        } else {
+            next = held;
+        }
+        held = null;
     }
 
     /**
@@ -144,6 +202,7 @@ public final class PathingCore {
         }
         current = null;
         next = null;
+        held = null;
         cancelRequested = true;
     }
 
@@ -165,6 +224,11 @@ public final class PathingCore {
     /** 上一 tick 是否有一次首段计算以失败告终。 */
     public boolean calcFailedLastTick() {
         return calcFailedLastTick;
+    }
+
+    /** 上一 tick 首段失败时搜索为什么停;失败不是搜索结论(孤儿段、夭折段)时为 null。 */
+    public PathCalcResult.Stop failedStop() {
+        return failedStop;
     }
 
     public Goal getGoal() {
@@ -220,6 +284,7 @@ public final class PathingCore {
         LIVE.put(player.getUUID(), this);
         expectedSegmentStart = pathStart();
         calcFailedLastTick = false;
+        failedStop = null;
         tickPath();
         harness.commitIfDirty();
         if (current != null) {
@@ -260,6 +325,7 @@ public final class PathingCore {
             if (goal == null || goal.isInGoal(feet.getX(), feet.getY(), feet.getZ())) {
                 Constants.LOG.debug("已到达目标");
                 next = null;
+                held = null;
                 sterileSegments = 0;
                 return;
             }
@@ -276,8 +342,12 @@ public final class PathingCore {
                 current.onTick(); // 不浪费本 tick,立即推进
                 return;
             }
-            if (inProgress != null) {
-                return; // 段刚结束,等在飞计算
+            if (held != null && !held.getPath().positions().contains(feet)
+                    && !held.getPath().positions().contains(expectedSegmentStart)) {
+                held = null;   // 扣着的接续段接不上身位了,和 next 同一口径丢弃
+            }
+            if (held != null || inProgress != null) {
+                return; // 段刚结束:接续段扣着等放行,或等在飞计算
             }
             startSearch(expectedSegmentStart);
             return;
@@ -296,10 +366,7 @@ public final class PathingCore {
         if (next != null && current.getPath().getDest().equals(next.getPath().getDest())) {
             next = null;
         }
-        if (inProgress != null) {
-            return;
-        }
-        if (next != null) {
+        if (inProgress != null || next != null || held != null) {
             return;
         }
         BlockPos dest = current.getPath().getDest();
@@ -323,18 +390,18 @@ public final class PathingCore {
         if (goal == null) {
             return;
         }
-        // 每次派发都重新取样冻结快照:背包/工具/饥饿与语义开关
-        // (sacred/deniedPlace)以派发一刻为准
+        // 每次派发都重新取样冻结快照:背包/工具/饥饿与规格的位置代价
+        // (当前目标的 sacred 格)以派发一刻为准
         context = searchContextFactory.get();
-        long primaryTimeout;
-        long failureTimeout;
+        int primaryNodes;
+        int failureNodes;
         NavSettings settings = NavSettings.get();
         if (current == null) {
-            primaryTimeout = settings.primaryTimeoutMS;
-            failureTimeout = settings.failureTimeoutMS;
+            primaryNodes = settings.primaryNodes;
+            failureNodes = settings.failureNodes;
         } else {
-            primaryTimeout = settings.planAheadPrimaryTimeoutMS;
-            failureTimeout = settings.planAheadFailureTimeoutMS;
+            primaryNodes = settings.planAheadPrimaryNodes;
+            failureNodes = settings.planAheadFailureNodes;
         }
         // 躲谁由目标说了算:战斗目标自带威胁表(位置+每只自己的危险半径),
         // 别的导航照旧走全局开关(默认关)。
@@ -351,7 +418,7 @@ public final class PathingCore {
         inProgressStart = start;
         dispatches++;
         inProgress = dispatcher.submit(realStart, start, goal, context, favoring,
-                primaryTimeout, failureTimeout);
+                primaryNodes, failureNodes);
     }
 
     /**
@@ -410,7 +477,11 @@ public final class PathingCore {
             if (executor.isPresent()) {
                 if (executor.get().getPath().positions().contains(expectedSegmentStart)) {
                     orphanDiscards = 0;
-                    current = executor.get();
+                    if (admission.test(executor.get().getPath())) {
+                        current = executor.get();
+                    } else {
+                        held = executor.get();
+                    }
                     countOutcome("首段采纳:" + result.getType() + "x"
                             + executor.get().getPath().length());
                 } else {
@@ -439,13 +510,18 @@ public final class PathingCore {
                     Constants.LOG.debug("首段计算失败");
                     orphanDiscards = 0;
                     calcFailedLastTick = true;
+                    failedStop = result.stop();
                 }
             }
         } else {
-            if (next == null) {
+            if (next == null && held == null) {
                 if (executor.isPresent()) {
                     if (executor.get().getPath().getSrc().equals(current.getPath().getDest())) {
-                        next = executor.get();
+                        if (admission.test(executor.get().getPath())) {
+                            next = executor.get();
+                        } else {
+                            held = executor.get();
+                        }
                         countOutcome("接续采纳:" + result.getType());
                     } else {
                         countOutcome("接续不接");
@@ -483,7 +559,7 @@ public final class PathingCore {
      * 同一,提取到基类静态助手后此处直接转发,逻辑不再重复。
      */
     public BlockPos pathStart() {
-        return Movement.pathStart(player);
+        return Movement.pathStart(player, spec);
     }
 
 
@@ -500,6 +576,7 @@ public final class PathingCore {
         }
         current = null;
         next = null;
+        held = null;
         goal = null;
         harness.clearAllKeys();
         harness.stopBreaking();

@@ -17,7 +17,7 @@ import com.dwinovo.numen.core.pathing.moves.CalculationContext;
 import com.dwinovo.numen.core.pathing.moves.ChunkLoadedTest;
 import com.dwinovo.numen.core.pathing.moves.Input;
 import com.dwinovo.numen.core.pathing.moves.Movement;
-import com.dwinovo.numen.core.pathing.moves.MovementHelper;
+import com.dwinovo.numen.core.pathing.spec.CellClass;
 import com.dwinovo.numen.core.pathing.moves.MovementState;
 import com.dwinovo.numen.core.pathing.moves.MovementStatus;
 import com.dwinovo.numen.core.pathing.moves.MutableMoveResult;
@@ -86,6 +86,11 @@ public final class PathExecutor {
     /** 剩余路径将要挤身而过的全部格。 */
     private HashSet<BlockPos> toWalkInto = new HashSet<>();
     private boolean failed;
+    /**
+     * 最近一次为等在飞搜索的新路而站住(回头暂停)的游戏刻。{@link #waiting} 只认当刻的——执行器这一刻没被
+     * 推进,就谈不上在等。
+     */
+    private long waitedAt = -1;
     /** 取消原因(失败验尸与放弃判定的素材);未失败时为 null。 */
     private String failureCause;
     private boolean sprintNextTick;
@@ -126,6 +131,12 @@ public final class PathExecutor {
         tickRecursionDepth = 0;
         recentStepsHead = 0;
         java.util.Arrays.fill(recentSteps, null);
+        // 上一刻挖掘落点被权限层拒了:这一段按那句话收场,重规划去——不等卡死检测慢慢量出来
+        String refused = harness.takeRefusal();
+        if (refused != null) {
+            cancel(refused);
+            return true;
+        }
         return onTick0();
     }
 
@@ -203,7 +214,7 @@ public final class PathExecutor {
             // 裁决必须和动作自己的合法性判定同源:脚下那格没支撑时(站在柱顶
             // 边沿之类),搜索用的是旁边那格作"假起点",动作也认这个假起点。
             // 只按 feet 判就比动作自己更严,会把本来健康的路径一条条掐掉。
-            if (movement.getValidPositions().contains(Movement.pathStart(player))) {
+            if (movement.getValidPositions().contains(Movement.pathStart(player, movement.spec()))) {
                 ticksNotInValid = 0;
             } else if (++ticksNotInValid > MAX_TICKS_NOT_IN_VALID) {
                 Constants.LOG.info(
@@ -273,6 +284,8 @@ public final class PathExecutor {
         if (pathPosition < path.movements().size() - 1) {
             Movement next = path.movements().get(pathPosition + 1);
             if (!loadedTest.isLoaded(next.getDest().getX(), next.getDest().getZ())) {
+                // 这种站住不算在等(不记 waitedAt):区块什么时候来没有保证——她站着不走,那边可能一直
+                // 不加载。算成等,期限与各种时限就会一直冻着,永远等下去。
                 Constants.LOG.debug("下一移动的终点在已加载区块边缘,暂停");
                 harness.clearAllKeys();
                 return true;
@@ -313,6 +326,7 @@ public final class PathExecutor {
         if (shouldPause()) {
             Constants.LOG.debug("在飞搜索的最优路径会回头经过脚下,暂停");
             harness.clearAllKeys();
+            waitedAt = player.level().getGameTime();
             return true;
         }
         MovementStatus movementStatus = movement.update();
@@ -523,6 +537,14 @@ public final class PathExecutor {
         return Math.sqrt(dx * dx + dz * dz);
     }
 
+    /**
+     * 这一刻身体站着等在飞搜索的新路,而不是在走:新路会回头经过脚下(回头暂停)。等的是后台搜索的真实时间,
+     * 不是走路;搜索的工作量有界,这种等总会结束。
+     */
+    public boolean waiting() {
+        return waitedAt == player.level().getGameTime();
+    }
+
     // ==================== 回头暂停 / 提前接段 ====================
 
     /**
@@ -540,14 +562,15 @@ public final class PathExecutor {
         }
         BlockPos feet = playerFeet(player);
         var level = com.dwinovo.numen.core.pathing.cache.LoadedOnlyView.of(player.level());
-        if (!MovementHelper.canWalkOn(level, feet.below())) {
+        Movement current = path.movements().get(pathPosition);
+        if (!CellClass.canWalkOn(level, feet.below(), current.spec())) {
             return false; // 站位本身可疑(可能跑酷中),别停
         }
-        if (!MovementHelper.canWalkThrough(level, feet)
-                || !MovementHelper.canWalkThrough(level, feet.above())) {
+        if (!CellClass.canWalkThrough(level, feet, current.spec())
+                || !CellClass.canWalkThrough(level, feet.above(), current.spec())) {
             return false; // 身位被埋,别停
         }
-        if (!path.movements().get(pathPosition).safeToCancel()) {
+        if (!current.safeToCancel()) {
             return false;
         }
         List<BlockPos> positions = currentBest.get().positions();
@@ -582,8 +605,8 @@ public final class PathExecutor {
             harness.ensureThrowawayInHotbar();
         }
         if (movement instanceof MovementFall
-                && movement.getSrc().getY() - movement.getDest().getY() > NavSettings.get().maxFallHeightNoWater
-                && !MovementHelper.isWater(player.level().getBlockState(movement.getDest()))) {
+                && movement.getSrc().getY() - movement.getDest().getY() > movement.spec().maxFallHeightNoWater()
+                && !CellClass.isWater(player.level().getBlockState(movement.getDest()))) {
             harness.ensureWaterBucketInHotbar();
         }
     }

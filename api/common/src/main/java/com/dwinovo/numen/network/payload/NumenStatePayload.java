@@ -35,7 +35,7 @@ public record NumenStatePayload(UUID uuid, boolean loaded, List<ItemStack> items
                                 List<ItemStack> craft, int foodLevel, float saturation,
                                 int selectedSlot, ItemStack offhand,
                                 List<MobEffectInstance> effects,
-                                String vehicleType, int vehicleId)
+                                String vehicleType, int vehicleId, String bodyState)
         implements NumenPayload {
 
     public static final ResourceLocation ID =
@@ -68,6 +68,7 @@ public record NumenStatePayload(UUID uuid, boolean loaded, List<ItemStack> items
         }
         buf.writeUtf(vehicleType);
         buf.writeVarInt(vehicleId);
+        buf.writeUtf(bodyState);
     }
 
     public static NumenStatePayload read(FriendlyByteBuf buf) {
@@ -91,7 +92,7 @@ public record NumenStatePayload(UUID uuid, boolean loaded, List<ItemStack> items
         String vehicleType = buf.readUtf();
         int vehicleId = buf.readVarInt();
         return new NumenStatePayload(uuid, loaded, items, craft, foodLevel, saturation,
-                selectedSlot, offhand, effects, vehicleType, vehicleId);
+                selectedSlot, offhand, effects, vehicleType, vehicleId, buf.readUtf());
     }
 
     private static void writeItems(FriendlyByteBuf buf, List<ItemStack> list) {

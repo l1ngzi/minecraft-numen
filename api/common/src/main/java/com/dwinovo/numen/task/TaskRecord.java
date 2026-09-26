@@ -1,7 +1,10 @@
 package com.dwinovo.numen.task;
+import com.dwinovo.numen.cli.ServerSource;
+import com.dwinovo.numen.permission.ConsentDesk;
 import com.dwinovo.numen.task.TaskResult;
 
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 /**
  * Mutable descriptor of an in-flight task. The {@link com.dwinovo.numen.agent.tool.NumenTool tool layer}
@@ -42,7 +45,10 @@ public abstract class TaskRecord {
     public static final long NO_DEADLINE = Long.MAX_VALUE / 2;
 
     private final long id;
-    /** Stable name of the originating tool (matches {@code NumenTool.name()}). */
+    /**
+     * 这件活叫什么:模型调的那个东西——工具派的是工具名({@code NumenTool.name()}),命令派的是
+     * {@link ServerSource#taskName()}(快捷工具名,或"组 动作")。回执、{@code task_finished}、{@code <current_task>} 都写它。
+     */
     private final String toolName;
     /**
      * The {@code id} field from the LLM's {@code tool_call} — must be echoed
@@ -62,16 +68,29 @@ public abstract class TaskRecord {
 
     private TaskState state = TaskState.PENDING;
     private TaskResult result;
+    /** 从外面叫停的是谁;任务自己走到 CANCELLED(比如她死了)或没被叫停时为 null。 */
+    private StopCause stopCause;
     /** 异步派发的记录:受理时已经回执过 tool_call,收尾改走 task_finished 事件。 */
     private boolean async;
     /** 首次进入 RUNNING 的游戏刻;task_status 用它报已耗时。-1 = 还没开跑。 */
     private long startedGameTime = -1;
+    /**
+     * 同步动作的回信口:派它的那次调用给的({@link TaskDispatch#runSync} 绑上),结算后的结果只从这里回——模型的调用、
+     * {@code /numen drive} 的发令人、主人点过头的调用(回执末尾交代允许了什么)各自拿到自己的那一份。异步的活受理时
+     * 已经回执过,收尾走 task_finished,没有它。
+     */
+    private Consumer<String> reply;
 
     protected TaskRecord(String toolName, String toolCallId, long deadlineGameTime) {
         this.id = ID_SOURCE.incrementAndGet();
         this.toolName = toolName;
         this.toolCallId = toolCallId;
         this.deadlineGameTime = deadlineGameTime;
+    }
+
+    /** 命令派下的活:名字与调用 id 都取自这次调用的源,交给 {@link TaskDispatch#setTask(ServerSource, TaskRecord)}。 */
+    protected TaskRecord(ServerSource source, long deadlineGameTime) {
+        this(source.taskName(), source.toolCallId(), deadlineGameTime);
     }
 
     public final long getId() { return id; }
@@ -90,6 +109,9 @@ public abstract class TaskRecord {
     public final String publicId() { return "t" + id; }
 
     public final void markAsync() { this.async = true; }
+
+    void replyTo(Consumer<String> reply) { this.reply = reply; }
+    Consumer<String> reply() { return reply; }
     public final boolean isAsync() { return async; }
 
     /**
@@ -128,6 +150,49 @@ public abstract class TaskRecord {
     /** Called by {@code CompanionTickDispatcher} as the record transitions through lifecycle. */
     public final void setState(TaskState state) { this.state = state; }
     public final void setResult(TaskResult result) { this.result = result; }
+
+    /**
+     * 从外面叫停这件活。叫停的人写进结算结果({@code TaskSlot} 结算时统一加在消息前面):模型分得清是主人按了
+     * 停止、它自己调了 task_stop、还是被新派的活顶掉——任务本身不知道谁叫停的它,这一句只能记在记录上。
+     * 已经走到终态的不改。
+     */
+    public final void stop(StopCause cause) {
+        if (!state.isTerminal()) {
+            state = TaskState.CANCELLED;
+            stopCause = cause;
+        }
+    }
+
+    public final StopCause getStopCause() { return stopCause; }
+
+    /**
+     * 谁叫停的这件活:模型读到的那句话,以及它挂着的征询因此撤回时主人看到的原因。叫停一件活和叫停一条等着主人点头的
+     * 指令是同一件事,两处都从这里取。
+     */
+    public enum StopCause {
+        OWNER("the owner pressed Stop", ConsentDesk.Withdrawal.OWNER_STOPPED),
+        TASK_STOP("you stopped it with task_stop", ConsentDesk.Withdrawal.TASK_ENDED),
+        COMMAND("stopped by a /numen command", ConsentDesk.Withdrawal.TASK_ENDED),
+        REPLACED("a newer body action replaced it", ConsentDesk.Withdrawal.TASK_ENDED),
+        BODY_LEFT("the body left the world", ConsentDesk.Withdrawal.BODY_LEFT);
+
+        private final String words;
+        private final ConsentDesk.Withdrawal withdrawal;
+
+        StopCause(String words, ConsentDesk.Withdrawal withdrawal) {
+            this.words = words;
+            this.withdrawal = withdrawal;
+        }
+
+        public String words() {
+            return words;
+        }
+
+        /** 被叫停的这一方挂着的征询因此撤回,主人看到的原因。 */
+        public ConsentDesk.Withdrawal withdrawal() {
+            return withdrawal;
+        }
+    }
 
     /**
      * Short human-readable description for the {@code /numen debug} head

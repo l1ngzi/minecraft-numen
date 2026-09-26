@@ -23,8 +23,8 @@ import java.util.Set;
  * 剪枝入册、编译 anyOf 导航契约、打不通时逐个除名轮换。它与 goto 的坐标三态
  * (BLOCK/COLUMN/YLEVEL)不共享任何逻辑,任务只管驱动。
  *
- * <p>搜索和 {@code scan_blocks} 走同一条路,只是 {@code want} 不同——所以
- * "最近的铁矿在哪"两个工具给的是同一个答案。
+ * <p>搜索和 {@code scan_blocks}、{@code mine} 走同一个出口({@link BlockSearch}),只是 {@code want}
+ * 不同——所以"最近的铁矿在哪"几个工具给的是同一个答案。
  */
 final class NearestBlockFinder {
 
@@ -47,6 +47,8 @@ final class NearestBlockFinder {
     private int scanId;
     /** 搜索回来的命中,等 {@link #drain()} 收割。 */
     private List<BlockScanner.Hit> hits;
+    /** 搜索被节数上限截断时的那句话({@link BlockSearch.ScanResult#sectionCapNote});没截断为 null。 */
+    private String capNote;
     private boolean scanDrained;
     /** 候选集编译出的导航契约(候选变动时重建)。 */
     private GoalCompiler.Compiled contract;
@@ -68,6 +70,7 @@ final class NearestBlockFinder {
                 NEAREST_WANTED, Set.of(target), res -> {
                     scanId = 0;
                     hits = res.matches();
+                    capNote = res.sectionCapNote();
                 });
     }
 
@@ -92,7 +95,7 @@ final class NearestBlockFinder {
         // 夹死的格不作候选——省得选中一个走近了也没法处置的目标。问的是这块
         // "能不能被处置",与她怎么走过去无关,按可改地形算。
         var ctx = ContextFactory.forExecution(player,
-                com.dwinovo.numen.core.pathing.moves.TerrainPermit.TERRAFORM);
+                com.dwinovo.numen.core.pathing.execute.PlayerNav.ContextProvider.NATURAL.spec());
         found.stream()
                 .sorted(Comparator.comparingDouble(BlockScanner.Hit::distance))
                 .map(h -> h.pos().immutable())
@@ -111,6 +114,11 @@ final class NearestBlockFinder {
 
     boolean hasCandidates() {
         return !candidates.isEmpty();
+    }
+
+    /** 搜索被节数上限截断时的那句话,失败回执照说;没截断为 null。 */
+    String capNote() {
+        return capNote;
     }
 
     /** 搜索已收割,且没有候选可给了。 */

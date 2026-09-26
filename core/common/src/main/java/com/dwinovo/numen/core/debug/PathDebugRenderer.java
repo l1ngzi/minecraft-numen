@@ -11,7 +11,6 @@ import com.dwinovo.numen.core.pathing.goals.GoalBlock;
 import com.dwinovo.numen.core.pathing.goals.GoalComposite;
 import com.dwinovo.numen.core.pathing.goals.GoalGetToBlock;
 import com.dwinovo.numen.core.pathing.goals.GoalInverted;
-import com.dwinovo.numen.core.pathing.goals.GoalTwoBlocks;
 import com.dwinovo.numen.core.pathing.goals.GoalXZ;
 import com.dwinovo.numen.network.payload.PathDebugPayload;
 import com.dwinovo.numen.platform.Services;
@@ -105,25 +104,18 @@ public final class PathDebugRenderer {
     }
 
     private static void packGoal(Goal goal, List<Long> boxes, List<Long> columns) {
-        // Java 17:类型模式 switch 是预览特性,改 if/else instanceof(语义同款,含 null 早退)
-        if (goal == null) {
-            return;
-        }
-        if (goal instanceof GoalTwoBlocks g) {
-            boxes.add(g.getGoalPos().asLong());
-            boxes.add(g.getGoalPos().above().asLong());
-        } else if (goal instanceof GoalBlock g) {
-            boxes.add(g.getGoalPos().asLong());
-        } else if (goal instanceof GoalGetToBlock g) {
-            boxes.add(g.getGoalPos().asLong());
-        } else if (goal instanceof GoalXZ g) {
-            columns.add(BlockPos.asLong(g.x, 0, g.z));
-        } else if (goal instanceof GoalComposite g) {
-            for (Goal sub : g.goals()) {
-                packGoal(sub, boxes, columns);
+        switch (goal) {
+            case null -> { }
+            case GoalBlock g -> boxes.add(g.getGoalPos().asLong());
+            case GoalGetToBlock g -> boxes.add(g.getGoalPos().asLong());
+            case GoalXZ g -> columns.add(BlockPos.asLong(g.x, 0, g.z));
+            case GoalComposite g -> {
+                for (Goal sub : g.goals()) {
+                    packGoal(sub, boxes, columns);
+                }
             }
-        } else if (goal instanceof GoalInverted g) {
-            packGoal(g.origin, boxes, columns);
+            case GoalInverted g -> packGoal(g.origin, boxes, columns);
+            default -> { }
         }
     }
 }

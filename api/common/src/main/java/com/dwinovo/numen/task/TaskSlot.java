@@ -68,10 +68,8 @@ final class TaskSlot {
     void put(NumenPlayer companion, TaskRecord rec) {
         if (record != null) {
             task.stop(companion, Task.StopReason.REPLACED);
-            if (!record.getState().isTerminal()) {
-                record.setState(TaskState.CANCELLED);
-            }
-            settle();
+            record.stop(TaskRecord.StopCause.REPLACED);
+            settle(companion);
         }
         rec.setState(TaskState.RUNNING);
         rec.markStarted(companion.level().getGameTime());
@@ -81,7 +79,7 @@ final class TaskSlot {
         task.start(companion);
         // start() 里就走到终态的(一次性动作把活全干完了 / 前置条件不通过)当刻结算,
         // 免得它空占一刻 RUNNING —— 那一刻里的一次"停止"会给已经干完的事发中断。
-        settleIfTerminal();
+        settleIfTerminal(companion);
     }
 
     /** 前进一刻:先看 deadline,再跑一刻,走到终态就结算。 */
@@ -97,7 +95,7 @@ final class TaskSlot {
                 record.setState(task.tick(companion));
             }
         }
-        settleIfTerminal();
+        settleIfTerminal(companion);
     }
 
     /** 丢掉身体但不拆掉任务——被更高层抢占时用,状态全留着,下次接着跑。 */
@@ -119,28 +117,26 @@ final class TaskSlot {
      * 在带外把记录标成 CANCELLED,而客户端严格串行的工具派发器会一直卡到那一个
      * 结果送出为止,不能等这个槽下次赢了才结算。
      */
-    void settleIfTerminal() {
+    void settleIfTerminal(NumenPlayer companion) {
         if (record != null && record.getState().isTerminal()) {
-            settle();
+            settle(companion);
         }
     }
 
-    /** 主人按停止:标成取消,下一次结算会送出结果。 */
-    void cancel() {
+    /** 从外面叫停(主人按停止、task_stop、命令):标成取消并记下是谁,下一次结算会送出结果。 */
+    void cancel(TaskRecord.StopCause cause) {
         if (record != null && record.getState() == TaskState.RUNNING) {
-            record.setState(TaskState.CANCELLED);
+            record.stop(cause);
         }
     }
 
     /** 身体要离开世界了:就地结算(它不会再被 tick),让 cleanup 跑完、结果送出。 */
-    void finalizeInline() {
+    void finalizeInline(NumenPlayer companion) {
         if (record == null) {
             return;
         }
-        if (!record.getState().isTerminal()) {
-            record.setState(TaskState.CANCELLED);
-        }
-        settle();
+        record.stop(TaskRecord.StopCause.BODY_LEFT);
+        settle(companion);
     }
 
     /**
@@ -153,13 +149,26 @@ final class TaskSlot {
             com.dwinovo.numen.event.NumenEvents.taskFinished(companion, record.publicId(),
                     record.getToolName(), "interrupted", "任务因她死亡而中断");
         }
+        if (record != null) {
+            com.dwinovo.numen.permission.ConsentDesk.of(companion).release(record,
+                    com.dwinovo.numen.permission.ConsentDesk.Withdrawal.DIED);
+        }
         task = null;
         record = null;
         ticksRun = 0;
     }
 
-    private void settle() {
-        record.setResult(task.result(record.getState()));
+    /**
+     * 结算:结果进出箱,腾位。槽放开这条记录的同一刻,主人为它答应下来的任务期授权与它没等到答复的
+     * 征询一并清掉——授权的作用域就是任务,由放开任务的这一处收口。征询撤回的原因是叫停它的那一方
+     * (主人按了停止、身体离开世界……),没人叫停就是任务自己收场了。
+     */
+    private void settle(NumenPlayer companion) {
+        TaskResult result = task.result(record.getState());
+        TaskRecord.StopCause cause = record.getStopCause();
+        record.setResult(cause == null ? result : result.stoppedBy(cause));
+        com.dwinovo.numen.permission.ConsentDesk.of(companion).release(record,
+                cause == null ? com.dwinovo.numen.permission.ConsentDesk.Withdrawal.TASK_ENDED : cause.withdrawal());
         outbox.accept(record);
         task = null;
         record = null;

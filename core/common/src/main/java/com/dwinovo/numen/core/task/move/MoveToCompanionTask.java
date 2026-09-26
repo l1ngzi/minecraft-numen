@@ -7,6 +7,10 @@ import com.dwinovo.numen.task.TaskState;
 import com.dwinovo.numen.entity.NumenPlayer;
 import com.dwinovo.numen.core.pathing.calc.NavGoal;
 import com.dwinovo.numen.core.pathing.execute.PlayerNav;
+import com.dwinovo.numen.core.pathing.goal.GoalCompiler;
+import com.dwinovo.numen.core.pathing.plan.RouteBook;
+import com.dwinovo.numen.core.pathing.spec.CellClass;
+import com.dwinovo.numen.core.pathing.spec.RouteSpec;
 import com.dwinovo.numen.core.task.base.AbstractCompanionTask;
 import net.minecraft.core.BlockPos;
 
@@ -22,11 +26,14 @@ import java.util.Map;
  *       reach the (x,z) location at any height — the default "go there", a wrong/
  *       absent Y can never make it unreachable;</li>
  *   <li>{@link MoveToTaskRecord.Kind#BLOCK} → {@link NavGoal#exact}: occupy exactly
- *       that cell; whatever occupies it has to be dug out, which only a goto with
- *       may_alter_terrain may do (the block form is how the caller says "walk up
+ *       that cell; whatever occupies it has to be dug out, which only a spec with
+ *       {@code alter:natural} allows (the block form is how the caller says "walk up
  *       beside it instead");</li>
  *   <li>{@link MoveToTaskRecord.Kind#YLEVEL} → {@link NavGoal#yLevel}:
- *       reach a target elevation.</li>
+ *       reach a target elevation;</li>
+ *   <li>{@link MoveToTaskRecord.Kind#ROUTE} → a route from the body's {@link RouteBook}:
+ *       goal and spec are the route's own, the cached path is walked while it is still
+ *       valid and recomputed under the same spec otherwise.</li>
  * </ul>
  * The planner is untouched; only the goal/arrival/result semantics differ per kind.
  * Results always echo the ACTUAL position reached (and the real ground height) so
@@ -49,8 +56,9 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
      *  at 0 anyway; this covers place maneuvers and replan gaps). */
     private static final int PROGRESS_GRACE_TICKS = 100;
     /** Hard check-in cap: even a healthy marathon yields (with a resumable result) after
-     *  this long, bounding how long the LLM goes without control. Renewals never push
-     *  the deadline past start + this. */
+     *  this many ticks of walking ({@link #workTicks()} — ticks spent waiting on the planner
+     *  don't count), bounding how long the LLM goes without control. Renewals never extend
+     *  the journey past this. */
     private static final long CHECK_IN_CAP_TICKS = 5 * 60 * 20;
     /** When the planner CAN'T reach the exact goal, a stop within this of the
      *  requested column still counts as "got there" (a teaching success, not a
@@ -69,14 +77,21 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
     private final BlockPos blockTarget;   // only meaningful for BLOCK kind
 
     private double bestDist = Double.MAX_VALUE;   // closest we've gotten to the goal
-    private int settleTicks = 0;                  // ticks of no progress after the planner gave up
+    /** {@link #workTicks()} when she last got closer — the water-settle timer counts from here. */
+    private long closerAt;
     /** The one near-retry recovery rung has been consumed (ladder state — survives suspend). */
     private boolean nearRetried;
-    /** Absolute ceiling for lease renewals (start + {@link #CHECK_IN_CAP_TICKS}); 0 = unset. */
-    private long leaseCapGameTime;
+    /** Ceiling for lease renewals on the work clock (start + {@link #CHECK_IN_CAP_TICKS}); 0 = unset. */
+    private long leaseCapWork;
 
     /** FIND(就近方块)子系统:扫描/入册/契约/轮换全在组件里,此处只驱动。 */
     private NearestBlockFinder finder;
+
+    /** ROUTE 形态:从路线簿取走的那条路(onStart 取,取不到即失败)。 */
+    private RouteBook.Route route;
+
+    /** 这次走路的规格:坐标/FIND 形态是记录里解析好的那份,ROUTE 形态是路线自己的。 */
+    private RouteSpec spec;
 
     /** 船腿:开工时坐在船上就先驾船,靠岸(或搁浅)后接步行。null = 没有/已交棒。 */
     private com.dwinovo.numen.core.pathing.execute.BoatNav boatLeg;
@@ -87,10 +102,32 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
         this.by = record.y != null ? (int) Math.floor(record.y) : 0;
         this.bz = record.z != null ? (int) Math.floor(record.z) : 0;
         this.blockTarget = new BlockPos(bx, by, bz);
+        this.spec = record.spec;
     }
 
     @Override
     protected void onStart() {
+        if (r.kind == MoveToTaskRecord.Kind.ROUTE) {
+            // 路线簿里的一条:取走即划掉(走过一次的路径不能再走);目标与规格都是它的
+            route = RouteBook.of(player).take(r.route);
+            if (route == null) {
+                fail("unknown route id '" + r.route + "' — ids come from a goto refusal or a plan_route"
+                        + " reply, and a route is dropped once walked or when newer plans push it out."
+                        + " plan_route again, or goto the destination coordinates.",
+                        FailureType.NO_PATH);
+                return;
+            }
+            spec = route.spec();
+            if (reached()) return;
+            long extra = Math.min(MAX_EXTRA_TICKS, 600 + (long) (repDistance() * TICKS_PER_BLOCK));
+            r.extendDeadlineTo(player.level().getGameTime() + extra);
+            leaseCapWork = workTicks() + CHECK_IN_CAP_TICKS;
+            nav = PlayerNav.alongRoute(player, route, this::reached);
+            com.dwinovo.numen.core.Constants.LOG.info(
+                    "[numen-task] goto start kind=ROUTE id={} toward={} alter={}",
+                    route.id(), route.goal().goal().center().toShortString(), spec.alter());
+            return;
+        }
         // 载具处置:坐在船上且有明确去处,先驾船——船腿走到离目标最近的水格,
         // 靠岸后接步行(见 tickBoatLeg)。其余情况(矿车没有舵、马的寻路仍按步行
         // 物理算、FIND 要先扫描)直接走步行段;下座驾是步行导航自己的事(PlayerNav)。
@@ -102,7 +139,7 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
             long extra = Math.min(MAX_EXTRA_TICKS,
                     600 + (long) (repDistance() * TICKS_PER_BLOCK));
             r.extendDeadlineTo(player.level().getGameTime() + extra);
-            leaseCapGameTime = player.level().getGameTime() + CHECK_IN_CAP_TICKS;
+            leaseCapWork = workTicks() + CHECK_IN_CAP_TICKS;
             com.dwinovo.numen.core.Constants.LOG.info(
                     "[numen-task] goto start kind={} target={},{},{} 驾船先行",
                     r.kind, bx, by, bz);
@@ -122,7 +159,7 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
             long findExtra = Math.min(MAX_EXTRA_TICKS,
                     600 + (long) NearestBlockFinder.BUDGET_BLOCKS * TICKS_PER_BLOCK);
             r.extendDeadlineTo(player.level().getGameTime() + findExtra);
-            leaseCapGameTime = player.level().getGameTime() + CHECK_IN_CAP_TICKS;
+            leaseCapWork = workTicks() + CHECK_IN_CAP_TICKS;
             finder.kickScan();
             com.dwinovo.numen.core.Constants.LOG.info(
                     "[numen-task] goto start kind=FIND block={}", r.block);
@@ -135,9 +172,9 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
         startWalkingNav();
     }
 
-    /** 这次 goto 的地形许可:模型点头了才开路,否则只走不改。四处建导航都从这儿取。 */
+    /** 这次 goto 的成本上下文来源:规格是记录里解析好的那份。四处建导航都从这儿取。 */
     private PlayerNav.ContextProvider terrain() {
-        return r.mayAlterTerrain ? PlayerNav.ContextProvider.TERRAFORM : PlayerNav.ContextProvider.DEFAULT;
+        return PlayerNav.ContextProvider.of(spec);
     }
 
     /**
@@ -149,13 +186,9 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
         // here — the progress lease below takes over once the journey is under way).
         long extra = Math.min(MAX_EXTRA_TICKS, 600 + (long) (repDistance() * TICKS_PER_BLOCK));
         r.extendDeadlineTo(player.level().getGameTime() + extra);
-        leaseCapGameTime = player.level().getGameTime() + CHECK_IN_CAP_TICKS;
-        // BLOCK targets go through the compiled front door so the target cell is
-        // SACRED when solid — the route may neither dig through nor bury the very
-        // block it was asked to reach. COLUMN/YLEVEL have no block objective.
-        nav = (r.kind == MoveToTaskRecord.Kind.BLOCK
-                ? PlayerNav.to(player, this::blockCompiled, WALK_SPEED, this::reached, terrain())
-                : PlayerNav.toGoal(player, this::goal, WALK_SPEED, this::reached, terrain()))
+        leaseCapWork = workTicks() + CHECK_IN_CAP_TICKS;
+        // 坐标形态的目标契约只在 MoveToTaskRecord.compile 一处成形,搜索与到达判定同一份
+        nav = PlayerNav.to(player, this::compiled, WALK_SPEED, this::reached, terrain())
                 .withTerrainProbe();
         com.dwinovo.numen.core.Constants.LOG.info(
                 "[numen-task] goto start kind={} target={},{},{} solid={}",
@@ -165,38 +198,20 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
         // box sits on the real target — e.g. a BLOCK goal under/over water that the path can
     }
 
-    /** The navigation goal for this move's kind. */
-    private NavGoal goal() {
-        return switch (r.kind) {
-            case BLOCK -> blockGoal();
-            case COLUMN -> NavGoal.column(bx, bz);
-            case YLEVEL -> NavGoal.yLevel(by);
-            case FIND -> finder.contract() == null ? null : finder.contract().goal();
-        };
-    }
-
-    /**
-     * BLOCK auto-typing: an enterable target cell means "stand exactly there"
-     * ({@link NavGoal#exact}); a cell occupied by a solid means "get to that
-     * block" ({@link NavGoal#getToBlock} — beside/on top counts, the block stays
-     * untouched). Re-evaluated per replan, so a cell that opens up mid-journey
-     * (the occupant broke) tightens back to exact.
-     */
-    private NavGoal blockGoal() {
-        return blockCompiled().goal();
-    }
-
-    /** The BLOCK kind's navigation contract: bare coordinates mean occupy
-     *  exactly that cell, digging out whatever is there (the block form is
-     *  the way to say "walk up beside it instead"). */
-    private com.dwinovo.numen.core.pathing.goal.GoalCompiler.Compiled blockCompiled() {
-        return com.dwinovo.numen.core.pathing.goal.GoalCompiler.standOn(blockTarget);
+    /** The coordinate kinds' navigation contract (BLOCK = occupy exactly that cell). */
+    private GoalCompiler.Compiled compiled() {
+        return MoveToTaskRecord.compile(r.kind, bx, by, bz);
     }
 
     /** Does a collision shape occupy the target cell (feet can't go there)? */
     private boolean targetCellSolid() {
         return !player.level().getBlockState(blockTarget)
                 .getCollisionShape(player.level(), blockTarget).isEmpty();
+    }
+
+    /** Could she stand in the target cell — open, with footing under it by this walk's spec? */
+    private boolean targetIsStandingPlace() {
+        return !targetCellSolid() && CellClass.canWalkOn(player.level(), blockTarget.below(), spec);
     }
 
     /** Slab-aware feet cell — the pathing node, not raw blockPosition (standing on a
@@ -222,7 +237,7 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
      */
     private boolean reached() {
         return inGoalCell(feet())
-                && inGoalCell(com.dwinovo.numen.core.pathing.moves.Movement.pathStart(player));
+                && inGoalCell(com.dwinovo.numen.core.pathing.moves.Movement.pathStart(player, terrain().spec()));
     }
 
     /** ONE membership definition per kind, shared with the search:
@@ -230,10 +245,11 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
      *  YLEVEL (y match + on the ground). */
     private boolean inGoalCell(BlockPos cell) {
         return switch (r.kind) {
-            case BLOCK -> blockGoal().isAt(cell);
+            case BLOCK -> compiled().goal().isAt(cell);
             case COLUMN -> cell.getX() == bx && cell.getZ() == bz;
             case YLEVEL -> cell.getY() == by && player.onGround();
             case FIND -> finder.contract() != null && finder.contract().goal().isAt(cell);
+            case ROUTE -> route.goal().goal().isAt(cell);
         };
     }
 
@@ -260,9 +276,8 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
         // consumption, NOT goal distance, is the liveness signal: healthy routes routinely
         // move away from the goal (skirting a lake, spiraling down), and the flat budget
         // above can't price terrain (a dig-heavy route once died 1 block short).
-        if (nav.stallTicks() <= PROGRESS_GRACE_TICKS && leaseCapGameTime > 0) {
-            long now = player.level().getGameTime();
-            r.extendDeadlineTo(Math.min(now + PROGRESS_LEASE_TICKS, leaseCapGameTime));
+        if (nav.stallTicks() <= PROGRESS_GRACE_TICKS) {
+            renewLease();
         }
         // Track passive progress toward the goal: the planner stops at the water surface
         // above an underwater target, but the body keeps drifting toward it on its own (it
@@ -270,9 +285,7 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
         double d = repDistance();
         if (d < bestDist - 0.1) {
             bestDist = d;
-            settleTicks = 0;
-        } else {
-            settleTicks++;
+            closerAt = workTicks();
         }
         return switch (nav.tick()) {
             case RUNNING -> TaskState.RUNNING;
@@ -290,7 +303,7 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
                 // up only once it's stopped making progress (bobbing at the surface below an
                 // out-of-reach above-water target). So the body settles onto an underwater
                 // goal but bails under an unreachable air one. On land a failure is final.
-                if (player.isInWater() && settleTicks < MAX_SETTLE_TICKS) {
+                if (player.isInWater() && workTicks() - closerAt < MAX_SETTLE_TICKS) {
                     yield TaskState.RUNNING;
                 }
                 // Otherwise: as close as the terrain allows → (teaching) success or fail.
@@ -300,10 +313,18 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
                 // not scope creep: a stop within that radius already counts as arrival
                 // (closeEnoughToSucceed above), the retry just lets the SEARCH aim for it.
                 // YLEVEL has no looser near-equivalent (its goal is already any-x/z), and
-                // the water-settle path above is untouched.
+                // the water-settle path above is untouched. TERRAIN_BLOCKED is not a
+                // geometry failure: its verdict already carries the priced candidates to
+                // the exact destination, and a looser goal behind the same wall would only
+                // spend another probe and list routes that stop short of where she was sent.
+                // An exact cell she could stand in has no near-arrival (closeEnoughToSucceed),
+                // so there is nothing looser for the retry to aim at.
                 if (!nearRetried && !player.isInWater()
+                        && nav.failType() != FailureType.TERRAIN_BLOCKED
+                        && !(r.kind == MoveToTaskRecord.Kind.BLOCK && targetIsStandingPlace())
                         && r.kind != MoveToTaskRecord.Kind.YLEVEL
-                        && r.kind != MoveToTaskRecord.Kind.FIND) {
+                        && r.kind != MoveToTaskRecord.Kind.FIND
+                        && r.kind != MoveToTaskRecord.Kind.ROUTE) {
                     nearRetried = true;
                     stopNav();
                     NavGoal retry = nearRetryGoal();
@@ -321,6 +342,15 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
         };
     }
 
+    /** 续约:期限保持在租约窗口里,但这一程干活的刻数不超过 {@link #CHECK_IN_CAP_TICKS}。 */
+    private void renewLease() {
+        if (leaseCapWork <= 0) {
+            return;
+        }
+        long capLeft = leaseCapWork - workTicks();
+        r.extendDeadlineTo(player.level().getGameTime() + Math.min(PROGRESS_LEASE_TICKS, capLeft));
+    }
+
     /**
      * 船腿的一刻:驾船朝目标推进,终态(靠岸或搁浅)都走同一条接力——到不了目标的
      * 水路不算失败,只是"这条腿到此为止",剩下的路归步行段(步行导航起步自会下船)。
@@ -328,9 +358,8 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
      */
     private TaskState tickBoatLeg() {
         // 船腿的续约与步行段同一制式:还在消耗航线就把期限保持在租约窗口里
-        if (boatLeg.progressing() && leaseCapGameTime > 0) {
-            long now = player.level().getGameTime();
-            r.extendDeadlineTo(Math.min(now + PROGRESS_LEASE_TICKS, leaseCapGameTime));
+        if (boatLeg.progressing()) {
+            renewLease();
         }
         var status = boatLeg.tick();
         if (status == com.dwinovo.numen.core.pathing.execute.BoatNav.Status.RUNNING) {
@@ -381,16 +410,22 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
     /** Did we get close enough to the destination to call it done (teaching success)?
      *  Requires solid footing (or water — the settle path): as a live arrival
      *  predicate on the near-retry nav this must not fire during a mid-air jump
-     *  or a sneak-hover over the edge, for the same reason as {@link #reached}. */
+     *  or a sneak-hover over the edge, for the same reason as {@link #reached}.
+     *  BLOCK only when the exact cell is no place to stand (the y was a guess — mid-air or
+     *  inside a block): a cell she could stand in is a real destination, and not getting
+     *  there is the planner's verdict to report (routes to choose, or why there is no path). */
     private boolean closeEnoughToSucceed() {
         if (!player.onGround() && !player.isInWater()) {
             return false;
         }
         return switch (r.kind) {
-            case BLOCK, COLUMN -> horizontalDistSqr(bx, bz) <= NEAR_SUCCESS_RADIUS * NEAR_SUCCESS_RADIUS;
+            case BLOCK -> !targetIsStandingPlace()
+                    && horizontalDistSqr(bx, bz) <= NEAR_SUCCESS_RADIUS * NEAR_SUCCESS_RADIUS;
+            case COLUMN -> horizontalDistSqr(bx, bz) <= NEAR_SUCCESS_RADIUS * NEAR_SUCCESS_RADIUS;
             case YLEVEL -> Math.abs(feet().getY() - by) <= 1;
-            // FIND 候选众多,失败梯已在候选间轮换过,不设贴近成功档
-            case FIND -> false;
+            // FIND 候选众多,失败梯已在候选间轮换过,不设贴近成功档;ROUTE 的失败回执本身
+            // 就是候选清单,模型另选一条比"差不多到了"有用
+            case FIND, ROUTE -> false;
         };
     }
 
@@ -411,6 +446,10 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
                 yield n == null ? NearestBlockFinder.BUDGET_BLOCKS
                         : Math.sqrt(player.distanceToSqr(n.getX() + 0.5, n.getY() + 0.5, n.getZ() + 0.5));
             }
+            case ROUTE -> {
+                BlockPos c = route.goal().goal().center();
+                yield Math.sqrt(player.distanceToSqr(c.getX() + 0.5, c.getY(), c.getZ() + 0.5));
+            }
         };
     }
 
@@ -428,11 +467,14 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
             return null;
         }
         if (finder.exhausted()) {
-            fail("no " + r.block + " found in the loaded area around me — explore"
+            String capped = finder.capNote();
+            fail("no " + r.block + " found in the loaded area around me"
+                    + (capped == null ? "" : " (" + capped + ")") + " — explore"
                     + " closer to one, or give exact coordinates (scan_blocks/locate can find some).",
                     FailureType.NO_PATH);
             return TaskState.FAILED;
         }
+        awaitSearch();   // 候选还没回来:站着等搜索,不算走路的刻
         return TaskState.RUNNING;
     }
 
@@ -475,6 +517,7 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
                         : "arrived beside " + r.block + " at " + n.getX() + "," + n.getY()
                                 + "," + n.getZ() + " — within reach to use.";
             }
+            case ROUTE -> "arrived via route " + route.id() + ", standing at " + bx(gy) + ".";
         };
     }
 
@@ -492,7 +535,9 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
                         ? "progress had stopped — likely blocked; call goto again to retry, or"
                                 + " try a nearer waypoint / scan_blocks for a way through."
                         : "the journey was still progressing and simply exceeded its check-in budget;"
-                                + " call goto again with the same target to resume.");
+                                + (r.kind == MoveToTaskRecord.Kind.ROUTE
+                                        ? " goto the destination coordinates to resume (a route id is spent once walked)."
+                                        : " call goto again with the same target to resume."));
     }
 
     @Override
@@ -528,6 +573,8 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
             case BLOCK, COLUMN -> "location x=" + bx + " z=" + bz;
             case YLEVEL -> "elevation y=" + by;
             case FIND -> "the nearest " + r.block;
+            case ROUTE -> "the destination of route " + route.id()
+                    + " (" + route.goal().goal().center().toShortString() + ")";
         };
         // 地形封路的验尸自带下一步(清单 + 重发提示),不再叠几何建议;其余无路才是
         // 几何问题:换近一点的路点或扫描。除非她只是没有垫路的料——读起来同样是死路,

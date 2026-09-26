@@ -47,10 +47,12 @@ public enum FailureType {
     BOXED_IN,
     /** A* returned nothing to the target. In-ladder: try a looser goal (near/adjacent). */
     NO_PATH,
-    /** No route WITHOUT altering terrain, but one exists if she may dig / bridge / pillar —
-     *  the reason lists exactly which blocks that route would break or place. In-ladder like
-     *  NO_PATH (a looser stance may still avoid it); the final verdict hands the list to the
-     *  LLM, which decides whether to re-send with consent. */
+    /** No route WITHOUT altering terrain, but routes exist if she may dig / bridge / pillar —
+     *  the reason lists candidate routes by id, each with exactly which blocks it would break
+     *  or place (they sit in the body's route book). Approach tasks treat it in-ladder like
+     *  NO_PATH (a looser stance may still avoid it); goto does not loosen its goal on it — the
+     *  candidates are the answer. The final verdict hands the list to the LLM, which picks one
+     *  ({@code goto route:<id>}) or another destination. */
     TERRAIN_BLOCKED,
     /** Never got within interaction reach of the target. In-ladder: reposition. */
     OUT_OF_REACH,
@@ -65,6 +67,9 @@ public enum FailureType {
     TARGET_LOST,
     /** No more matching targets within the bounded scan radius. Kick to LLM (widen? stop?). */
     MINED_OUT,
+    /** The permission layer refused the action (owner's rule, observe mode, or a consent that was
+     *  not given). Kick to LLM: the model must not route around it — the owner decides. */
+    REFUSED,
     /** A fluid/lava/void hazard blocks the safe execution. In-ladder: route around, else give up. */
     HAZARD,
     /** Pre-empted or cancelled (owner stop, death). Not a real failure — terminal housekeeping. */

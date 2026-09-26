@@ -1,6 +1,7 @@
 package com.dwinovo.numen.core.pathing.calc;
 
 import com.dwinovo.numen.core.pathing.goals.GoalAvoidEntities;
+import com.dwinovo.numen.core.pathing.moves.BlockReach;
 import com.dwinovo.numen.core.pathing.settings.NavSettings;
 import com.dwinovo.numen.core.pathing.moves.ActionCosts;
 import net.minecraft.core.BlockPos;
@@ -119,6 +120,22 @@ public interface NavGoal {
     }
 
     /**
+     * 路停在 {@code feet} 之后还要付的价钱(tick),默认 0——见内核 {@code Goal#arrivalCost}。
+     * 只对 {@link #isAt} 成立的格有意义。
+     */
+    default double arrivalCost(BlockPos feet) {
+        return 0;
+    }
+
+    /**
+     * 到了 {@code inner} 之后还要付 {@code cost}:估价加上它(仍是乐观下界),到达价就是它。复合目标的
+     * 成员各带各的价,搜索按"走过去 + 到了再付"挑——挖矿按挖掘的定价挑先挖哪一块。
+     */
+    static NavGoal priced(NavGoal inner, double cost) {
+        return new Priced(inner, cost);
+    }
+
+    /**
      * 环形站位:离 {@code pos} 在 {@code [inner, outer]} 之间。
      *
      * <p>它给的不只是到达条件,更是<b>估价</b>:到<b>带</b>的距离,两侧都朝带递减。
@@ -171,19 +188,20 @@ public interface NavGoal {
     }
 
     /**
-     * 挖它的站位:<b>身体贴着它,但不踩在它头上</b>。
+     * 挖它的站位:<b>站在这一格上按 {@link BlockReach} 够得着它,而且脚不高于它</b>。
      *
-     * <p>贴着 = 它是脚那格或头那格的邻格,所以中间<b>按定义没有东西</b> —— 不必射线也知道
-     * 打得到。这正是挖掘那一侧"眼睛拉得出一条不被挡的射线"的下界近似,而射线太贵、不能
-     * 塞进 {@code isAt}(每展开一个节点跑一次)。
+     * <p>挖矿任务判"站在这儿能不能原地挖"问的也是这个站位({@code MineCompanionTask.reachableTarget}),
+     * 所以导航说到位了,挖掘那一侧一定认——两边是同一个判据,不是一个近似另一个。树冠上的原木因此站在
+     * 地上就能挖到,不必爬上去贴着它。
      *
-     * <p><b>踩在它头上必须排除</b>:脚下那一格是她自己的地板,挖掘层永远不碰
-     * ({@code MineCompanionTask.reachableTarget} 里的 {@code ore.equals(support)}
-     * 那一条)。收进来就是死循环 —— 导航说"你已经站到位了",挖掘说"这格不能挖",
-     * 于是拆导航、重规划、脚下还是那格,实测能一直转下去。
+     * <p><b>脚高于它的格不收</b>:比脚低的方块从上往下看,视线要穿过脚下的地板,而自己的地板挖掘层永远
+     * 不碰。脚下更低处的目标由路线往下走过去(路上本来就能挖穿目标格)。
+     *
+     * <p>挡在视线上的东西不在这里判:射线太贵、塞不进 {@code isAt}(每展开一个节点跑一次)。树叶这类
+     * 挡路的由挖掘器先挖开;挖不开的,挖掘那一侧按那一格拉不出射线记账。
      */
-    static NavGoal mineStance(BlockPos ore) {
-        return new MineStance(ore);
+    static NavGoal mineStance(BlockPos ore, BlockReach reach) {
+        return new MineStance(ore, reach);
     }
 
     /**
@@ -198,44 +216,8 @@ public interface NavGoal {
     }
 
     /**
-     * Stand in the ore's own column to mine it — a family of mining stance
-     * goals, parameterised by how far BELOW the ore the feet may be:
-     * <ul>
-     *   <li>{@code maxBelow == 0} → feet exactly at the ore;</li>
-     *   <li>{@code maxBelow == 1} → feet at the ore or one below;</li>
-     *   <li>{@code maxBelow == 2} → feet at the ore, one, or two below.</li>
-     * </ul>
-     * Which one a given ore gets is decided by {@code MineCompanionTask.coalesce}:
-     * the bottom
-     * of a vertical run gets the exact ({@code maxBelow == 0}) stance so the body
-     * mines it in place rather
-     * than tunnelling under it. The vertical term in the heuristic folds the whole
-     * accepted band to zero cost.
-     */
-    static NavGoal mineColumn(BlockPos ore, int maxBelow) {
-        return new MineColumn(ore, maxBelow);
-    }
-
-    /** Loosest-stance shorthand (feet at the ore, one, or two below). */
-    static NavGoal mine(BlockPos ore) {
-        return mineColumn(ore, 2);
-    }
-
-    /**
-     * Get as FAR as possible from {@code from} while holding a y-level —
-     * used for branch mining: when no ore is
-     * known, head out along the level to dig fresh tunnel and expose more. Never
-     * "arrived" (isAt always false) so the search returns a best-effort partial that
-     * walks outward; the next replan continues exploring.
-     */
-    static NavGoal runAway(BlockPos from, int maintainY) {
-        return new RunAway(from, maintainY);
-    }
-
-    /**
-     * 躲开一组威胁,站到每一只的危险半径之外。与 {@link #runAway} 的两点差别:
-     * <b>它认得完所有威胁</b>(runAway 的估价只看最近那一个,两只怪一左一右时会直穿其中一只),
-     * 而且<b>它有终点</b>——出了半径就停,不必在上层每 tick 手动喊停。
+     * 躲开一组威胁,站到每一只的危险半径之外:<b>它认得完所有威胁</b>(估价是每只贡献相加的势场,
+     * 两只怪一左一右时不会直穿其中一只),而且<b>它有终点</b>——出了半径就停,不必在上层每 tick 手动喊停。
      *
      * <p>威胁坐标是<b>快照</b>。实体走动由重规划跟上({@code PlayerNav} 比对 {@link #center()}
      * 的位移),不由估价函数实时跟随——搜索途中变化的估价会让 A* 失去最优性保证。
@@ -455,28 +437,29 @@ public interface NavGoal {
     }
 
     /** {@link #getToBlock} 的产物:身高修正的 Manhattan 贴脸邻域。 */
-    /** {@link #mineStance} 的产物:贴着,且脚不高于它。 */
+    /** {@link #mineStance} 的产物:够得着,且脚不高于它。 */
     final class MineStance implements NavGoal {
         public final BlockPos ore;
+        public final BlockReach reach;
 
-        MineStance(BlockPos ore) {
+        MineStance(BlockPos ore, BlockReach reach) {
             this.ore = ore.immutable();
+            this.reach = reach;
         }
 
         @Override public boolean isAt(BlockPos feet) {
-            int dy = feet.getY() - ore.getY();
-            if (dy > 0) {
-                return false;   // 踩在它头上:那是自己的地板
-            }
-            int dx = Math.abs(feet.getX() - ore.getX());
-            int dz = Math.abs(feet.getZ() - ore.getZ());
-            // 两格高的身体:脚在下方时头那格也算贴着,所以负的 dy 折一格
-            int bodyDy = dy + 1 <= 0 ? dy + 1 : 0;
-            return dx + dz + Math.abs(bodyDy) <= 1;
+            return feet.getY() <= ore.getY() && reach.from(feet, ore);
         }
 
+        /**
+         * 到"够得着它的那片站位"还差的路:眼睛超出交互距离的那一截,水平按走、竖直按跳或落计价;脚高于它时
+         * 至少还要落到它那一层。
+         */
         @Override public double heuristic(BlockPos from) {
-            return Math.max(0.0, pointBound(ore, from) - COST_HEURISTIC - JUMP_ONE_BLOCK);
+            BlockReach.Gap gap = reach.gap(from, ore);
+            double climb = Math.max(0, gap.vertical());
+            double drop = Math.max(Math.max(0, from.getY() - ore.getY()), Math.max(0, -gap.vertical()));
+            return gap.horizontal() * COST_HEURISTIC + climb * JUMP_ONE_BLOCK + drop * DESCEND_ONE_BLOCK;
         }
 
         @Override public BlockPos center() {
@@ -557,46 +540,55 @@ public interface NavGoal {
             return min;
         }
 
+        /** 停在这一格满足的那些成员里最便宜的到达价。 */
+        @Override public double arrivalCost(BlockPos feet) {
+            double min = Double.MAX_VALUE;
+            for (NavGoal g : members) {
+                if (g.isAt(feet)) {
+                    min = Math.min(min, g.arrivalCost(feet));
+                }
+            }
+            return min == Double.MAX_VALUE ? 0 : min;
+        }
+
         @Override public BlockPos center() {
             return centroid;
         }
     }
 
-    /** {@link #mineColumn} 的产物:矿柱站位带(脚位在矿至矿下 maxBelow 格)。 */
-    final class MineColumn implements NavGoal {
-        public final BlockPos ore;
-        public final int maxBelow;
+    /** {@link #priced} 的产物。 */
+    final class Priced implements NavGoal {
+        public final NavGoal inner;
+        public final double cost;
 
-        MineColumn(BlockPos ore, int maxBelow) {
-            this.ore = ore.immutable();
-            this.maxBelow = maxBelow;
+        Priced(NavGoal inner, double cost) {
+            this.inner = inner;
+            this.cost = cost;
         }
 
         @Override public boolean isAt(BlockPos feet) {
-            return feet.getX() == ore.getX() && feet.getZ() == ore.getZ()
-                    && feet.getY() <= ore.getY() && feet.getY() >= ore.getY() - maxBelow;
+            return inner.isAt(feet);
         }
 
         @Override public double heuristic(BlockPos from) {
-            double dx = Math.abs(ore.getX() - from.getX());
-            double dz = Math.abs(ore.getZ() - from.getZ());
-            double horizontal = (Math.min(dx, dz) * SQRT_2 + Math.abs(dx - dz))
-                    * COST_HEURISTIC;
-            // Feet anywhere in {o.y .. o.y-maxBelow} count as arrived: fold that
-            // band to zero.
-            int yDiff = from.getY() - ore.getY();
-            int adj = yDiff >= 0 ? yDiff : Math.min(0, yDiff + maxBelow);
-            // Above the goal (adj>0) we DESCEND to it,
-            // below it (adj<0) we ASCEND. (The old mine() had these two swapped,
-            // overestimating descents — an inadmissible heuristic.)
-            double vertical = adj > 0
-                    ? adj * DESCEND_ONE_BLOCK
-                    : -adj * JUMP_ONE_BLOCK;
-            return horizontal + vertical;
+            return inner.heuristic(from) + cost;
+        }
+
+        /** 进度只问离得近了没有,不掺价钱。 */
+        @Override public double progressHeuristic(BlockPos from) {
+            return inner.progressHeuristic(from);
+        }
+
+        @Override public double arrivalCost(BlockPos feet) {
+            return cost;
         }
 
         @Override public BlockPos center() {
-            return ore;
+            return inner.center();
+        }
+
+        @Override public String toString() {
+            return "Priced{" + inner + " +" + cost + "}";
         }
     }
 
@@ -668,40 +660,6 @@ public interface NavGoal {
         /** 跟着要去的那个目标走:它一挪动就触发重规划。 */
         @Override public BlockPos center() {
             return approach.center();
-        }
-    }
-
-    /** {@link #runAway} 的产物:持高度外逃,永不"到达"。 */
-    final class RunAway implements NavGoal {
-        public final BlockPos from;
-        public final int maintainY;
-
-        RunAway(BlockPos from, int maintainY) {
-            this.from = from.immutable();
-            this.maintainY = maintainY;
-        }
-
-        @Override public boolean isAt(BlockPos feet) {
-            return false;   // never done — keep exploring outward
-        }
-
-        @Override public double heuristic(BlockPos fromPos) {
-            // Run-away heuristic: −(octile×weight) — negated so farther = lower h
-            // = preferred — then blended with the y-hold term:
-            // min*0.6 + yLevelTerm*1.5.
-            double dx = Math.abs(from.getX() - fromPos.getX());
-            double dz = Math.abs(from.getZ() - fromPos.getZ());
-            double xz = (Math.min(dx, dz) * SQRT_2 + Math.abs(dx - dz))
-                    * COST_HEURISTIC;
-            double min = -xz;
-            int cy = fromPos.getY();
-            double yLevel = cy > maintainY ? (cy - maintainY) * DESCEND_ONE_BLOCK
-                    : cy < maintainY ? (maintainY - cy) * JUMP_ONE_BLOCK : 0.0;
-            return min * 0.6 + yLevel * 1.5;
-        }
-
-        @Override public BlockPos center() {
-            return from;
         }
     }
 }

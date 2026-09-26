@@ -7,10 +7,9 @@ import com.dwinovo.numen.core.pathing.goals.GoalBlock;
 import com.dwinovo.numen.core.pathing.goals.GoalComposite;
 import com.dwinovo.numen.core.pathing.goals.GoalGetToBlock;
 import com.dwinovo.numen.core.pathing.goals.GoalNear;
-import com.dwinovo.numen.core.pathing.goals.GoalRunAway;
-import com.dwinovo.numen.core.pathing.goals.GoalTwoBlocks;
 import com.dwinovo.numen.core.pathing.goals.GoalXZ;
 import com.dwinovo.numen.core.pathing.goals.GoalYLevel;
+import com.dwinovo.numen.core.pathing.moves.BlockReach;
 
 import net.minecraft.core.BlockPos;
 import org.junit.jupiter.api.Test;
@@ -154,37 +153,6 @@ class GoalAdapterTest {
     }
 
     @Test
-    void mineColumnFamilyKeepsStanceBand() {
-        // maxBelow=0 → 单格;=1 → 双格;=2 → 双格 + 补格,成员集逐格一致
-        NavGoal band0 = NavGoal.mineColumn(T, 0);
-        Goal mapped0 = GoalAdapter.toEngineGoal(band0);
-        assertInstanceOf(GoalBlock.class, mapped0);
-        assertSameMembership(band0, mapped0);
-
-        NavGoal band1 = NavGoal.mineColumn(T, 1);
-        Goal mapped1 = GoalAdapter.toEngineGoal(band1);
-        assertInstanceOf(GoalTwoBlocks.class, mapped1);
-        assertSameMembership(band1, mapped1);
-
-        NavGoal band2 = NavGoal.mineColumn(T, 2);
-        Goal mapped2 = GoalAdapter.toEngineGoal(band2);
-        assertInstanceOf(GoalComposite.class, mapped2);
-        assertSameMembership(band2, mapped2);
-        assertSameHeuristic(band2, mapped2);
-    }
-
-    @Test
-    void runAwayMapsToGoalRunAway() {
-        NavGoal source = NavGoal.runAway(T, T.getY());
-        Goal mapped = GoalAdapter.toEngineGoal(source);
-        assertInstanceOf(GoalRunAway.class, mapped);
-        assertSameHeuristic(source, mapped);
-        // 旧语义永不到达;新目标在常规距离上同样不到达
-        assertFalse(mapped.isInGoal(T.getX() + 500, T.getY(), T.getZ() + 500));
-        assertFalse(mapped.isInGoal(T.getX(), T.getY(), T.getZ()));
-    }
-
-    @Test
     void anonymousNavGoalFallsBackToWrapper() {
         BlockPos c = T.above(3);
         NavGoal custom = new NavGoal() {
@@ -224,11 +192,11 @@ class GoalAdapterTest {
         assertInstanceOf(GoalNear.class, near.engineGoal());
 
         GoalCompiler.Compiled mine = GoalCompiler.mineField(
-                List.of(T), List.of(T.offset(2, 0, 2)));
+                List.of(T), p -> 0, List.of(T.offset(2, 0, 2)), new BlockReach(1.62, 4.5));
         assertInstanceOf(GoalComposite.class, mine.engineGoal());
         // 挖矿目标不设神圣：站位本身常在目标柱子里，禁止路过砸掉会让站位不可达
         assertTrue(mine.sacred().isEmpty());
-        // 成员判定与旧词表目标一致(矿柱带 + 掉落物邻域)
+        // 成员判定与旧词表目标一致(够得着的站位 + 掉落物)
         assertSameMembership(mine.goal(), mine.engineGoal());
     }
 }

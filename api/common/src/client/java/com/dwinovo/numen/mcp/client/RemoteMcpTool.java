@@ -49,6 +49,7 @@ public final class RemoteMcpTool implements NumenTool {
         this.callTimeoutMs = callTimeoutMs;
     }
 
+
     @Override
     public String name() {
         return qualifiedName;

@@ -4,8 +4,11 @@ import com.dwinovo.numen.core.pathing.moves.AimGeometry;
 import com.dwinovo.numen.entity.InputDriver;
 
 import com.dwinovo.numen.entity.NumenPlayer;
-import com.dwinovo.numen.core.pathing.util.BlockHelper;
 import com.dwinovo.numen.core.act.ToolSelect;
+import com.dwinovo.numen.core.mixin.ServerPlayerGameModeAccessor;
+import com.dwinovo.numen.permission.Action;
+import com.dwinovo.numen.permission.Permission;
+import com.dwinovo.numen.permission.Verdict;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
@@ -16,8 +19,6 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
-import net.minecraft.world.phys.shapes.Shapes;
-import net.minecraft.world.phys.shapes.VoxelShape;
 
 /**
  * Progressive block breaking that drives the SAME native server entry point a
@@ -38,9 +39,27 @@ import net.minecraft.world.phys.shapes.VoxelShape;
  *   <li>interrupted: {@code ABORT_DESTROY_BLOCK} + clear the crack.</li>
  * </ul>
  * Shared by path-obstruction clearing ({@code ExecHarness}), auto-mine
- * ({@code MineCompanionTask}), and {@link Interaction} (break_block / interact).
+ * ({@code MineCompanionTask}), construction clearing ({@code BuildCompanionTask}) and
+ * {@link Interaction} (the {@code interact_at} left click). It is the only place a block is broken, so it is
+ * where the permission layer is enforced: every new target is judged before the first swing
+ * ({@link #permit}); a refused block is reported as {@link DigResult#REFUSED} and never touched.
+ *
+ * <p>服务端也可能把这一下退回来:别的模组取消了左键或破坏事件、原版的出生点保护与冒险模式限制——它们都在
+ * 原生通道里生效,不经权限层。挖掘器在 START 与收尾那一下之后读服务端的挖掘状态({@link ServerPlayerGameModeAccessor})
+ * 对账,退回来的同样按 {@link DigResult#REFUSED} 收场,理由是 {@link #SERVER_REFUSED}——不空挥到超时,也不把
+ * 没挖掉的方块报成挖掉了。
  */
 public final class BlockDigger {
+
+    /** 服务端把挖掘退回来时回执里的理由。 */
+    public static final String SERVER_REFUSED = "服务器没让挖掉这一格";
+
+    /**
+     * 服务端收下这一下挖掘时,比交互距离多给的那一格:{@code ServerPlayerGameMode#handleBlockBreakAction}
+     * 验的是 {@code canInteractWithBlock(pos, 1.0)}。射线按"交互距离 + 这一格"打,打得到的就是服务端认的。
+     * 调用方判"够不够得着"按的是站立格的眼位({@code BlockReach}),身体在格里偏开的那一截落在这一格里。
+     */
+    private static final double SERVER_REACH_SLACK = 1.0;
 
     /** The crack is broadcast under breaker id -1 (not the player's entity id),
      *  so the server's own per-player crack clearing on STOP can't wipe it early. */
@@ -60,6 +79,8 @@ public final class BlockDigger {
     private int blockHitDelay;    // post-break cooldown (survives reset())
     /** 开挖时的主手物品快照;中途换持(物品/组件级)即重开进度。 */
     private net.minecraft.world.item.ItemStack destroyingItem;
+    /** 最近一次 {@link DigResult#REFUSED} 的理由(权限层的裁决,或服务端退回的 {@link #SERVER_REFUSED});没被拒过是 null。 */
+    private Verdict refusal;
 
     public BlockDigger(NumenPlayer player) {
         this.player = player;
@@ -68,6 +89,53 @@ public final class BlockDigger {
     /** The block currently being dug, or {@code null} when idle. */
     public BlockPos current() {
         return pos;
+    }
+
+    /**
+     * 最近一次真挖掉的那一格和它挖掉前的方块。{@link DigResult#BROKE_OCCLUDER} 挖掉的是挡在前面的那格,
+     * 不是调用方给的目标,记账要记这里说的这一格。
+     */
+    public record Broken(BlockPos pos, BlockState was) {}
+
+    private Broken lastBroken;
+
+    /** 最近一次 {@link DigResult#broke()} 挖掉的是哪一格;还没挖掉过是 null。 */
+    public Broken lastBroken() {
+        return lastBroken;
+    }
+
+    /** Why the last {@link DigResult#REFUSED} happened; {@code null} if nothing was refused yet. */
+    public Verdict refusal() {
+        return refusal;
+    }
+
+    /**
+     * 问权限层这一格能不能挖。每次换新目标问一次,在第一次挥手之前;被拒的格连 START 都不发。
+     * 唯一挖掘落点上的唯一门,所有调用方(寻路、挖矿、施工、interact_at 左键)都过它。
+     */
+    private Verdict permit(BlockPos target) {
+        Verdict verdict = Permission.judge(player, Action.breakBlock(target, player.level().getBlockState(target)));
+        if (!verdict.allowed()) {
+            refusal = verdict;
+        }
+        return verdict;
+    }
+
+    /**
+     * 施工清障:一次到位的原生破坏({@code ServerPlayerGameMode.destroyBlock}——掉落按手持结算、
+     * 创造不掉、别的模组的破坏事件照常触发),不走逐刻进度,也不要求视线。同样先过权限层。
+     *
+     * @return 方块真的没了
+     */
+    public boolean destroyNow(BlockPos target) {
+        BlockState state = player.level().getBlockState(target);
+        if (state.isAir()) {
+            return false;
+        }
+        if (!permit(target).allowed()) {
+            return false;
+        }
+        return player.gameMode.destroyBlock(target);
     }
 
     /** Outcome of one {@link #digStep} tick — lets callers distinguish "still working"
@@ -80,19 +148,17 @@ public final class BlockDigger {
         /** An OCCLUDER in the way broke this tick (not the target) — a step toward it. */
         BROKE_OCCLUDER,
         /** No face of the target is reachable and nothing safe occludes it — stuck (maps to OCCLUDED). */
-        NO_SHOT;
+        NO_SHOT,
+        /**
+         * The permission layer refused this block before the first swing, or the server bounced the break
+         * back (another mod cancelled it, vanilla spawn protection); {@link #refusal()} says why. The block is untouched.
+         */
+        REFUSED;
 
         /** 本 tick 有方块真的没了(目标或遮挡物)。 */
         public boolean broke() {
             return this == BROKE_TARGET || this == BROKE_OCCLUDER;
         }
-    }
-
-    /** Legacy boolean shim: {@code true} only on the tick the TARGET breaks. Kept so
-     *  pre-migration callers ({@link Interaction}) compile unchanged; delete once every
-     *  caller consumes {@link #digStep}. */
-    public boolean dig(BlockPos target) {
-        return digStep(target) == DigResult.BROKE_TARGET;
     }
 
     /**
@@ -115,6 +181,10 @@ public final class BlockDigger {
         InputDriver.halt(player);
         BlockPos effective = crosshairHit.getBlockPos();
         if (pos == null || !pos.equals(effective)) {
+            if (!permit(effective).allowed()) {
+                cancel();
+                return DigResult.REFUSED;
+            }
             // 工具由外层(移动原语按意图格)选择,这里不按命中格改选
             start(effective, false);
         }
@@ -129,6 +199,14 @@ public final class BlockDigger {
     }
 
     public DigResult digStep(BlockPos target) {
+        return digStep(target, occluder -> true);
+    }
+
+    /**
+     * 同 {@link #digStep(BlockPos)},只是挡在前面的那一格还要 {@code mayClear} 点头才挖:权限层管许不许,
+     * 调用方管这一格挖了会不会出事(比如挖矿按自己挑目标的那道剪枝,不挖贴着流体、顶着落沙的)。
+     */
+    public DigResult digStep(BlockPos target, java.util.function.Predicate<BlockPos> mayClear) {
         Level level = player.level();
         if (blockHitDelay > 0) {                    // let the previous break land first
             blockHitDelay--;
@@ -140,13 +218,16 @@ public final class BlockDigger {
         // sight (leaves in front, a tight column overhead) — fall back to breaking the
         // occluder: aim at the target's centre and break whatever the
         // crosshair actually hits, opening the way, instead of holding forever for a clear angle.
-        // One guard: never grind a do_not_break / container block as the occluder.
-        BlockHitResult hit = reachableHit(target);
+        // The occluder goes through the same permission gate as any target: a player's chest in
+        // the way is never ground down just to reach something behind it.
+        BlockHitResult hit = AimGeometry.visibleHit(player, target, digReach());
         BlockPos effective = target;
         if (hit == null) {
             BlockHitResult center = centerRaycast(target);
             if (center != null && !center.getBlockPos().equals(target)
-                    && !BlockHelper.shouldAvoidBreaking(level, center.getBlockPos())) {
+                    && mayClear.test(center.getBlockPos())
+                    && Permission.judge(player, Action.breakBlock(center.getBlockPos(),
+                            level.getBlockState(center.getBlockPos()))).allowed()) {
                 hit = center;
                 effective = center.getBlockPos();
             }
@@ -156,6 +237,10 @@ public final class BlockDigger {
             return DigResult.NO_SHOT;                // no clear shot, nothing safe in the way — stuck
         }
         if (pos == null || !pos.equals(effective)) {
+            if (!permit(effective).allowed()) {
+                cancel();
+                return DigResult.REFUSED;
+            }
             start(effective, true);
         }
         // dig() may be clearing an OCCLUDER this tick, not the target; report the break (true) ONLY
@@ -171,12 +256,16 @@ public final class BlockDigger {
             InputDriver.halt(player);
             return DigResult.PROGRESSING;
         }
-        BlockHitResult hit = reachableHit(target);
+        BlockHitResult hit = AimGeometry.visibleHit(player, target, digReach());
         InputDriver.halt(player);
         if (hit == null) {
             return DigResult.NO_SHOT;
         }
         if (pos == null || !pos.equals(target)) {
+            if (!permit(target).allowed()) {
+                cancel();
+                return DigResult.REFUSED;
+            }
             start(target, true);
         }
         return advance(hit, true);
@@ -203,17 +292,27 @@ public final class BlockDigger {
             player.swing(InteractionHand.MAIN_HAND);
             if (player.getAbilities().instabuild) {
                 // creative: START 即破,连挖不设间隔(每 tick 一格)
-                reset();
-                return targetBreak ? DigResult.BROKE_TARGET : DigResult.BROKE_OCCLUDER;
+                if (!landed(state)) {
+                    return refusedByServer();
+                }
+                return broke(state, targetBreak);
             }
             if (!state.isAir()) {
                 // START 通道内服务端已自带 attack 与 insta-mine 判定,这里
                 // 不再补一次(重复 attack 会翻倍副作用,红石矿甚至会在
                 // insta-mine 后被旧 state 的 attack 原地点亮放回)
                 if (state.getDestroyProgress(player, level, pos) >= 1.0f) {
-                    reset();                         // instamine: START broke it (no STOP is sent)
-                    return targetBreak ? DigResult.BROKE_TARGET : DigResult.BROKE_OCCLUDER;
+                    if (!landed(state)) {
+                        return refusedByServer();
+                    }
+                    return broke(state, targetBreak);   // instamine: START broke it (no STOP is sent)
                 }
+            }
+            ServerPlayerGameModeAccessor server = (ServerPlayerGameModeAccessor) player.gameMode;
+            if (!server.numen$isDestroyingBlock() || !pos.equals(server.numen$destroyPos())) {
+                // 服务端没收下这一下 START:往下攒进度也永远等不到它挖。它没开始挖,不必发 ABORT
+                started = false;
+                return refusedByServer();
             }
             return DigResult.PROGRESSING;            // begin accumulating next tick
         }
@@ -228,11 +327,41 @@ public final class BlockDigger {
             // removes it (no intact-for-a-frame flicker).
             player.gameMode.handleBlockBreakAction(pos,
                     ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, side, level.getMaxBuildHeight(), -1);
+            if (!landed(state)) {
+                return refusedByServer();
+            }
             blockHitDelay = postBreakDelay();
-            reset();
-            return targetBreak ? DigResult.BROKE_TARGET : DigResult.BROKE_OCCLUDER;
+            return broke(state, targetBreak);
         }
         return DigResult.PROGRESSING;
+    }
+
+    /** 这一格的破坏落地了:记下挖掉的是哪一格,清掉挖掘状态。 */
+    private DigResult broke(BlockState was, boolean targetBreak) {
+        lastBroken = new Broken(pos.immutable(), was);
+        reset();
+        return targetBreak ? DigResult.BROKE_TARGET : DigResult.BROKE_OCCLUDER;
+    }
+
+    /**
+     * 收尾那一下(creative/秒破的 START、生存的 STOP)之后,这一格的破坏落地了没有:方块变了算落地;服务端
+     * 按自己的钟觉得进度还差一点、挂成延迟破坏的,过几刻它自己挖掉,也算。都不是就是服务端退回来了。
+     *
+     * @param before 按下之前那一格的方块状态
+     */
+    private boolean landed(BlockState before) {
+        if (player.level().getBlockState(pos) != before) {
+            return true;
+        }
+        ServerPlayerGameModeAccessor server = (ServerPlayerGameModeAccessor) player.gameMode;
+        return server.numen$hasDelayedDestroy() && pos.equals(server.numen$delayedDestroyPos());
+    }
+
+    /** 服务端退回了这一下:记下理由,放开这一格(清裂纹),按 REFUSED 收场。 */
+    private DigResult refusedByServer() {
+        refusal = Verdict.deny(SERVER_REFUSED);
+        cancel();
+        return DigResult.REFUSED;
     }
 
     private void start(BlockPos target, boolean selectTool) {
@@ -275,57 +404,22 @@ public final class BlockDigger {
         started = false;
     }
 
-    /**
-     * The first point ON {@code pos} the eye can
-     * actually raycast to — the block's shape centre first, then its six face centres. The
-     * returned {@link BlockHitResult} carries the exact aim point ({@code getLocation}) AND
-     * the face the ray hits ({@code getDirection}), so the dig looks at the real interaction
-     * face like a player would. {@code null} if nothing on the block is in line of sight.
-     */
-    private BlockHitResult reachableHit(BlockPos pos) {
-        Level level = player.level();
-        Vec3 eye = player.getEyePosition();
-        double reach = com.dwinovo.numen.core.pathing.moves.AimGeometry.blockReachDistance(player);
-        BlockState state = level.getBlockState(pos);
-        VoxelShape shape = state.getShape(level, pos);
-        if (shape.isEmpty()) {
-            shape = Shapes.block();
-        }
-        // Collision-shape centre first (empty collision → whole-cell centre),
-        // then the six face centres on the outline shape.
-        Vec3[] aims = {
-                com.dwinovo.numen.core.pathing.moves.AimGeometry.collisionCenter(level, pos, state),
-                offsetOn(pos, shape, 0.5, 0.0, 0.5),
-                offsetOn(pos, shape, 0.5, 1.0, 0.5),
-                offsetOn(pos, shape, 0.5, 0.5, 0.0),
-                offsetOn(pos, shape, 0.5, 0.5, 1.0),
-                offsetOn(pos, shape, 0.0, 0.5, 0.5),
-                offsetOn(pos, shape, 1.0, 0.5, 0.5),
-        };
-        for (Vec3 aim : aims) {
-            Vec3 dir = aim.subtract(eye);
-            if (dir.lengthSqr() < 1.0e-8) continue;
-            Vec3 end = eye.add(dir.normalize().scale(reach));
-            BlockHitResult res = level.clip(new ClipContext(
-                    eye, end, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
-            if (res.getType() == HitResult.Type.BLOCK && res.getBlockPos().equals(pos)) {
-                return res;
-            }
-        }
-        return null;
+    /** How far a dig swing reaches: the vanilla interaction range plus the server's slack. */
+    private double digReach() {
+        return com.dwinovo.numen.platform.Services.PLATFORM.blockInteractionRange(player) + SERVER_REACH_SLACK;
     }
 
     /**
      * A single ray from the eye to {@code target}'s shape centre — the break-the-occluder
-     * fallback when {@link #reachableHit} finds no clear face: the ray lands on the
+     * fallback when {@link AimGeometry#visibleHit} finds no clear face: the ray lands on the
      * occluder (a leaf / a tight overhead), and we break THAT to open the way. Null on a miss / out
-     * of reach. ({@link #reachableHit} already tries the centre first, so if that hit the target it
-     * would have returned it; reaching here means the centre ray hits something else.)
+     * of reach. ({@link AimGeometry#visibleHit} already tries the centre first, so if that hit the
+     * target it would have returned it; reaching here means the centre ray hits something else.)
      */
     private BlockHitResult centerRaycast(BlockPos target) {
         Level level = player.level();
         Vec3 eye = player.getEyePosition();
-        double reach = com.dwinovo.numen.core.pathing.moves.AimGeometry.blockReachDistance(player);
+        double reach = digReach();
         Vec3 center = Vec3.atCenterOf(target);
         Vec3 dir = center.subtract(eye);
         if (dir.lengthSqr() < 1.0e-8) {
@@ -335,15 +429,6 @@ public final class BlockDigger {
         BlockHitResult res = level.clip(new ClipContext(
                 eye, end, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
         return res.getType() == HitResult.Type.BLOCK ? res : null;
-    }
-
-    /** A point on the block's shape:
-     *  {@code min*m + max*(1-m)} on each axis. */
-    private static Vec3 offsetOn(BlockPos pos, VoxelShape shape, double mx, double my, double mz) {
-        double x = shape.min(Direction.Axis.X) * mx + shape.max(Direction.Axis.X) * (1 - mx);
-        double y = shape.min(Direction.Axis.Y) * my + shape.max(Direction.Axis.Y) * (1 - my);
-        double z = shape.min(Direction.Axis.Z) * mz + shape.max(Direction.Axis.Z) * (1 - mz);
-        return new Vec3(pos.getX() + x, pos.getY() + y, pos.getZ() + z);
     }
 
 }

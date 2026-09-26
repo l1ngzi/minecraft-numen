@@ -8,8 +8,8 @@ import com.dwinovo.numen.entity.NumenPlayer;
 
 /**
  * The "walk within reach, then act" shape shared by every task that navigates to a
- * target and then does one bounded thing there ({@code place_block},
- * {@code break_block}, {@code interact}, a single attack engagement, …). It collapses
+ * target and then does one bounded thing there ({@code interact_at},
+ * {@code interact_entity}). It collapses
  * the identical nav-drive-then-act loop those tasks each hand-wrote onto three small
  * abstract hooks, leaving each concrete task to describe only its target, its
  * arrival test, and its action.
@@ -79,6 +79,10 @@ public abstract class GoToThenDoTask<R extends TaskRecord> extends AbstractCompa
     protected final TaskState onTick() {
         if (reached()) return act();
         if (nav == null) {
+            // 身体还没站稳(刚落地、跳在半空)时判不了够不够得着:等它站稳,不拿半空里的一刻下"够不着"的结论
+            if (!bodySettled()) {
+                return TaskState.RUNNING;
+            }
             // 无到场导航的动作任务:不在工作距离内 = 教学失败,旅行归 goto
             net.minecraft.core.BlockPos t = gotoFirstTarget();
             if (t != null) {

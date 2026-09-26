@@ -16,6 +16,7 @@ import com.dwinovo.numen.core.task.base.AbstractCompanionTask;
 import com.dwinovo.numen.core.task.chain.MobDefenseChain;
 import com.dwinovo.numen.entity.InputDriver;
 import com.dwinovo.numen.entity.NumenPlayer;
+import com.dwinovo.numen.permission.Action;
 import com.dwinovo.numen.task.TaskState;
 
 import net.minecraft.core.BlockPos;
@@ -166,7 +167,10 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
      */
     private BlockPos haven;
 
-    /** 这一段逃跑路线是哪一刻算的。到点就重算,见 {@link #FLEE_REPLAN_TICKS}。 */
+    /**
+     * 这一段逃跑路线是在哪一刻({@link #workTicks()})派的。跑满 {@link #FLEE_REPLAN_TICKS} 刻就重算;等规划的刻
+     * 不算,否则慢于这个间隔的搜索每次都在出结论前被重算掐掉,她一步也跑不出去。
+     */
     private long havenPlannedAt;
 
     public AttackCompanionTask(NumenPlayer player, AttackTaskRecord record) {
@@ -196,6 +200,10 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
         AttackPlan.Move move = AttackPlan.decide(field, lastMove);
         lastMove = move;
         logMove(move, field);
+        if (move.action() == AttackPlan.Action.DONE && awaitingOwner) {
+            InputDriver.halt(player);   // 没别的可打,等主人点头
+            return TaskState.RUNNING;
+        }
 
         Entity chosen = move.foeId() == AttackPlan.NO_FOE ? null : liveEntity(move.foeId());
         if (chosen != target) {
@@ -236,16 +244,40 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
      *
      * <p>点名模式下"被授权"是模型给的那份清单;无差别模式下是"这一刻在追我的"——会分裂的怪
      * 裂出来的新 id 因此自动进场,而点名的清单一裂开就作废了。
+     *
+     * <p>进场之前先过权限层({@link #cleared}):攻击层"够得着就打"只看局面,所以门必须开在这里,
+     * 一处。要问的这一刻不进局面,一张卡问主人,主人点头下一刻进场;不许的记进账本,回执说清是谁、
+     * 为什么。自卫换目标时新冒出来的要问的,同样再问。
      */
     private Battlefield surveyField() {
         hostiles = Menace.hostilesAround(player, FIELD_RADIUS);
+        List<Entity> candidates = new ArrayList<>();
+        for (var mob : hostiles) {
+            boolean engaging = mob.getTarget() == player || mob == player.getLastHurtByMob();
+            boolean authorized = r.indiscriminate ? engaging : r.entityIds.contains(mob.getId());
+            if (authorized && !r.terminal(mob.getId())) {
+                candidates.add(mob);
+            }
+        }
+        if (!r.indiscriminate) {
+            for (int id : r.entityIds) {
+                Entity e = r.terminal(id) ? null : liveEntity(id);
+                if (e != null && !candidates.contains(e)) {
+                    candidates.add(e);
+                }
+            }
+        }
+        java.util.Set<Integer> cleared = cleared(candidates);
         List<Battlefield.Foe> foes = new ArrayList<>();
         for (var mob : hostiles) {
             boolean engaging = mob.getTarget() == player || mob == player.getLastHurtByMob();
             boolean authorized = r.indiscriminate ? engaging : r.entityIds.contains(mob.getId());
+            if (authorized && !r.terminal(mob.getId()) && !cleared.contains(mob.getId())) {
+                authorized = false;   // 在等主人点头:在场,但这一刻不是目标
+            }
             if (r.terminal(mob.getId())) {
-                // 打完了、丢了、或者走不到又射不到的:<b>整只移出局面</b>。留着当"还有东西在
-                // 追我"的话,判据会永远喊走位 —— 一只在悬崖对面射她的骷髅就能把任务钉死。
+                // 打完了、丢了、走不到又射不到、或者不许打的:<b>整只移出局面</b>。留着当"还有
+                // 东西在追我"的话,判据会永远喊走位 —— 一只在悬崖对面射她的骷髅就能把任务钉死。
                 // 躲它归寻路的势场管,那一层看的是场上的怪,不是这份名单。
                 continue;
             }
@@ -265,7 +297,7 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
                     continue;
                 }
                 Entity e = liveEntity(id);
-                if (e != null) {
+                if (e != null && cleared.contains(id)) {
                     foes.add(new Battlefield.Foe(id, player.distanceTo(e),
                             Menace.explodes(e), Menace.armed(e),
                             false, reachable(id), true));
@@ -279,6 +311,34 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
                 loadout.hasMelee(), loadout.hasRanged(),
                 retreatFailures >= MAX_RETREAT_FAILURES, foes);
     }
+
+    /**
+     * 这一批要打的交给权限层:放行的进场;要问的合成一张卡、等主人答复期间不进场;不许的(主人拒绝、
+     * 规则、模式、外部强制)记进账本,从此不在局面里。
+     *
+     * @return 这一刻放行的实体 id
+     */
+    private java.util.Set<Integer> cleared(List<Entity> candidates) {
+        List<Action> attacks = new ArrayList<>(candidates.size());
+        for (Entity e : candidates) {
+            attacks.add(Action.attack(e));
+        }
+        List<Permit> permits = permitAll(attacks);
+        java.util.Set<Integer> cleared = new java.util.HashSet<>();
+        awaitingOwner = false;
+        for (int i = 0; i < candidates.size(); i++) {
+            int id = candidates.get(i).getId();
+            switch (permits.get(i).state()) {
+                case ALLOWED -> cleared.add(id);
+                case REFUSED -> r.refused(id, permits.get(i).refusal());
+                case WAITING -> awaitingOwner = true;
+            }
+        }
+        return cleared;
+    }
+
+    /** 这一刻有要打的在等主人点头:局面里没别的可打也不收场。 */
+    private boolean awaitingOwner;
 
     private static boolean containsId(List<Battlefield.Foe> foes, int id) {
         for (var f : foes) {
@@ -353,8 +413,21 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
             succeed();
             return TaskState.SUCCESS;
         }
+        if (!r.refused().isEmpty() && r.refused().size() + r.lost().size() + r.unreachable().size()
+                >= r.entityIds.size()) {
+            // 一只都没打:不是找不到,是不许打。让模型去问主人,别换个法子再试。
+            fail("could not attack: " + refusedSummary(), FailureType.REFUSED);
+            return TaskState.FAILED;
+        }
         fail("none of the requested entity ids could be attacked", FailureType.TARGET_LOST);
         return TaskState.FAILED;
+    }
+
+    /** {@code entity 12 needs the owner's consent (has an owner); entity 15 ...}。 */
+    private String refusedSummary() {
+        List<String> parts = new ArrayList<>();
+        r.refused().forEach((id, why) -> parts.add("entity " + id + " " + why));
+        return String.join("; ", parts);
     }
 
     private void logMove(AttackPlan.Move move, Battlefield field) {
@@ -786,13 +859,12 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
             Constants.LOG.info("[numen-attack] 没有可跑的方向");
             return TaskState.RUNNING;
         }
-        long now = player.level().getGameTime();
-        if (nav != null && now - havenPlannedAt >= FLEE_REPLAN_TICKS) {
+        if (nav != null && workTicks() - havenPlannedAt >= FLEE_REPLAN_TICKS) {
             stopNav();   // 到点重算:落点不变,只让这一刻的怪进边成本
         }
         if (nav == null) {
             BlockPos landing = haven;
-            havenPlannedAt = now;
+            havenPlannedAt = workTicks();
             nav = PlayerNav.toGoal(player, () -> NavGoal.approachAvoiding(
                             NavGoal.nearGround(landing, HAVEN_ARRIVED),
                             Menace.AVOID_PENALTY, roadHazards()),
@@ -922,6 +994,7 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
         touched.addAll(r.defeated());
         touched.addAll(r.lost());
         touched.addAll(r.unreachable());
+        touched.addAll(r.refused().keySet());
         Map<String, Object> byEntity = new LinkedHashMap<>();
         for (int id : touched) {
             Map<String, Object> entry = new LinkedHashMap<>();
@@ -935,6 +1008,9 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
         data.put("defeated_entity_ids", r.defeated());
         data.put("lost_entity_ids", r.lost());
         data.put("unreachable_entity_ids", r.unreachable());
+        if (!r.refused().isEmpty()) {
+            data.put("refused_entity_ids", r.refused());
+        }
         data.put("strikes", r.strikes());
         data.put("combat_by_entity", byEntity);
         data.put("loot_gained", lootGained());
@@ -951,12 +1027,14 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
 
     @Override
     protected String successMessage() {
+        String refusedNote = r.refused().isEmpty() ? "" : "; left alone: " + refusedSummary();
         if (r.indiscriminate) {
-            return "fought off " + tally() + "; nothing is coming after you any more";
+            return "fought off " + tally() + "; nothing is coming after you any more" + refusedNote;
         }
         int incomplete = r.lost().size() + r.unreachable().size();
         return "defeated " + tally()
-                + (incomplete == 0 ? "" : " (" + incomplete + " targets could not be completed)");
+                + (incomplete == 0 ? "" : " (" + incomplete + " targets could not be completed)")
+                + refusedNote;
     }
 
     @Override

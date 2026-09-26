@@ -2,6 +2,8 @@ package com.dwinovo.numen.core.task.build;
 
 import com.dwinovo.numen.core.pathing.cache.LoadedOnlyView;
 import com.dwinovo.numen.entity.NumenPlayer;
+import com.dwinovo.numen.permission.Action;
+import com.dwinovo.numen.permission.Permission;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BedPart;
@@ -10,6 +12,9 @@ import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.shapes.CollisionContext;
 import net.minecraft.world.phys.shapes.VoxelShape;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 单格判据的唯一出处:这一格能不能动、该不该动、是不是注定动不了。
@@ -54,24 +59,51 @@ final class BuildCellRules {
      * <p>不让动的格子<b>不进待建集、也算作了结</b>。若只是"放的时候跳过",它每一遍
      * 都会重新排进顺序、每一遍都放不下去,整栋楼陪着它重试到超时,而那一格从第一遍
      * 起就已经注定动不了。
+     *
+     * <p>让路的档位管"石头挡路要不要顶掉";这一格上的东西许不许清、这一格许不许放,
+     * 问权限层——玩家的箱子、玩家放的墙、观察模式,都是它的裁决,这里不另设判据。
+     * 要问主人的在开工前整批问过({@link #actionsFor});主人答应的这时已是放行,拒绝的仍不许。
+     * 双格方块连另一半一起问:任一半不许清就都不动。
      */
     boolean blockedByMode(BuildTaskRecord.Target target) {
-        BlockPos pos = target.pos();
-        BlockState current = peek(pos);
-        if (!r.replaceMode.allows(current, target.desiredState())) {
+        BlockState current = peek(target.pos());
+        ReplaceMode mode = target.mask() != null ? target.mask() : r.replaceMode;
+        if (!mode.allows(current, target.desiredState())) {
             return true;
         }
-        // 玩家的箱子不能被一堵墙盖掉。让路的档位管"石头挡路要不要顶掉",这一条
-        // 管"带方块实体的方块要不要动"——少砌一格墙是遗憾,清掉一箱子东西是事故。
-        if (r.replaceBlockEntities || current.isAir()) {
+        if (target.matches(current)) {
             return false;
         }
-        if (current.hasBlockEntity() && !target.matches(current)) {
-            return true;
+        for (Action action : actionsFor(target)) {
+            if (!Permission.judge(player, action).allowed()) {
+                return true;
+            }
         }
-        // 双格方块连另一半一起看:任一半压着方块实体就都不动
+        return false;
+    }
+
+    /**
+     * 把这一格建成目标要对世界做的事:清掉上面现有的、放上目标、清掉双格方块另一半压着的。
+     * 权限层问的就是这几件——施工中逐格判与开工前整批问主人用同一份。
+     */
+    List<Action> actionsFor(BuildTaskRecord.Target target) {
+        BlockPos pos = target.pos();
+        BlockState current = peek(pos);
+        List<Action> actions = new ArrayList<>(3);
+        if (!current.isAir()) {
+            actions.add(Action.breakBlock(pos, current));
+        }
+        if (!isAirTarget(target)) {
+            actions.add(Action.place(pos, current, target.item()));
+        }
         BlockPos other = otherHalfOf(pos, target.desiredState());
-        return other != null && peek(other).hasBlockEntity();
+        if (other != null) {
+            BlockState otherState = peek(other);
+            if (!otherState.isAir()) {
+                actions.add(Action.breakBlock(other, otherState));
+            }
+        }
+        return actions;
     }
 
     /**

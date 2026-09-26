@@ -47,6 +47,18 @@ public final class NumenNetwork {
                 com.dwinovo.numen.network.payload.CurrentTaskPayload::read,
                 com.dwinovo.numen.network.payload.CurrentTaskPayload::handle);
 
+        // S→C: 同伴在等主人点头的那条征询(或撤回)——答复框与轮廓只照它画(见 ConsentDesk)。
+        Services.NETWORK.registerServerToClient(
+                com.dwinovo.numen.network.payload.ConsentRequestPayload.ID,
+                com.dwinovo.numen.network.payload.ConsentRequestPayload::read,
+                com.dwinovo.numen.network.payload.ConsentRequestPayload::handle);
+
+        // C→S: 主人在答复框上的答复(只认主人)。
+        Services.NETWORK.registerClientToServer(
+                com.dwinovo.numen.network.payload.ConsentReplyPayload.ID,
+                com.dwinovo.numen.network.payload.ConsentReplyPayload::read,
+                com.dwinovo.numen.network.payload.ConsentReplyPayload::handle);
+
         // C→S: owner pressed Stop — cancel the companion's queued + running tasks.
         Services.NETWORK.registerClientToServer(
                 com.dwinovo.numen.network.payload.CancelTasksPayload.ID,
@@ -59,8 +71,8 @@ public final class NumenNetwork {
                 com.dwinovo.numen.network.payload.SpeakingStatePayload::read,
                 com.dwinovo.numen.network.payload.SpeakingStatePayload::handle);
 
-        // S→C: an Numen body died; suspend the owner's agent loop (resolves the in-flight
-        // tool call with the death cause). Recoverable — see NumenRespawnPayload.
+        // S→C: an Numen body died; suspend the owner's agent loop (records the cut-off turn
+        // with the death cause). Recoverable — see NumenRespawnPayload.
         Services.NETWORK.registerServerToClient(
                 NumenDeathPayload.ID, NumenDeathPayload::read,
                 NumenDeathPayload::handle);

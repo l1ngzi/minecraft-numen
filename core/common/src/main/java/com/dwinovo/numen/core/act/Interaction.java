@@ -4,14 +4,21 @@ import com.dwinovo.numen.entity.InputDriver;
 
 import com.dwinovo.numen.entity.NumenPlayer;
 import com.dwinovo.numen.core.FailureType;
+import com.dwinovo.numen.permission.Action;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.projectile.ProjectileUtil;
+import net.minecraft.world.item.BlockItem;
+import net.minecraft.world.item.BucketItem;
+import net.minecraft.world.item.FireChargeItem;
+import net.minecraft.world.item.FlintAndSteelItem;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.EntityHitResult;
@@ -52,8 +59,6 @@ public final class Interaction {
     public enum Status { RUNNING, DONE, FAILED }
     public enum Button { ATTACK, USE }
 
-    /** Vanilla block-interaction reach (survival); creative is 5. */
-    private static final double REACH = 4.5;
     /** The two hands USE tries, main first (vanilla interaction tries both). */
     private static final InteractionHand[] HANDS = {InteractionHand.MAIN_HAND, InteractionHand.OFF_HAND};
 
@@ -163,6 +168,22 @@ public final class Interaction {
         return i;
     }
 
+    /**
+     * 右键落在 {@code hit} 这一面、手里是 {@code stack} 时,会不会往世界里放东西、放在哪:方块物品贴着
+     * 命中面放进可替换的格,桶倒出或舀起液体,打火石与火焰弹点起火——都是一次放置,交权限层裁决。
+     * 不往世界里放东西时为 null。按下右键的各处(导航执行、interact_at)都按这一份判。
+     */
+    public static Action placementOf(Level level, BlockHitResult hit, ItemStack stack) {
+        BlockPos placeAt = hit.getBlockPos().relative(hit.getDirection());
+        BlockState before = level.getBlockState(placeAt);
+        Item item = stack.getItem();
+        boolean places = (before.canBeReplaced() && item instanceof BlockItem)
+                || item instanceof BucketItem
+                || item instanceof FlintAndSteelItem
+                || item instanceof FireChargeItem;
+        return places ? Action.place(placeAt, before, item) : null;
+    }
+
     /** Right-click in the air with the held item, on the given {@link Timing}
      *  ({@code hold()} eats food / {@code hold(n)} draws and looses a bow). */
     public static Interaction useInAir(NumenPlayer p, InteractionHand hand, Timing timing) {
@@ -177,7 +198,8 @@ public final class Interaction {
     /**
      * The vanilla crosshair pick: one ray from the eyes along the CURRENT
      * look, resolving the CLOSER of a block or an entity (else MISS). A wall occludes a mob behind
-     * it (entities are searched only as near as the block hit). {@code reach} 4.5 = survival.
+     * it (entities are searched only as near as the block hit). {@code reach} is the caller's vanilla
+     * interaction range ({@code blockInteractionRange} / {@code entityInteractionRange}).
      */
     public static HitResult nativeRaytrace(NumenPlayer player, double reach) {
         Level level = player.level();
@@ -272,7 +294,15 @@ public final class Interaction {
 
     private Status breakBlock() {
         if (player.level().getBlockState(block).isAir()) return Status.DONE;
-        return digger.dig(block) ? Status.DONE : Status.RUNNING;
+        BlockDigger.DigResult result = digger.digStep(block);
+        if (result == BlockDigger.DigResult.REFUSED) {
+            // 权限层在挖掘落点把门;这里只转述,不换法子
+            failReason = "cannot break that block: " + digger.refusal().reason();
+            failType = FailureType.REFUSED;
+            hardFail = true;
+            return Status.FAILED;
+        }
+        return result == BlockDigger.DigResult.BROKE_TARGET ? Status.DONE : Status.RUNNING;
     }
 
     // ---- USE + air: tap or hold (food / bow) ----
@@ -312,6 +342,15 @@ public final class Interaction {
 
     private boolean fireAttackEntity() {
         if (entity == null || !entity.isAlive()) return false;
+        // 攻击落点:宠物、有名字的、村民,主人没点头就不出手
+        com.dwinovo.numen.permission.Verdict verdict = com.dwinovo.numen.permission.Permission.judge(
+                player, com.dwinovo.numen.permission.Action.attack(entity));
+        if (!verdict.allowed()) {
+            failReason = "cannot attack " + entity.getName().getString() + ": " + verdict.reason();
+            failType = FailureType.REFUSED;
+            hardFail = true;
+            return false;
+        }
         InputDriver.halt(player);
         InputDriver.lookAt(player, entity.getEyePosition());
         boolean recovering = entity instanceof net.minecraft.world.entity.LivingEntity living
@@ -329,6 +368,7 @@ public final class Interaction {
 
     private boolean fireUseBlock() {
         InputDriver.halt(player);
+        net.minecraft.world.inventory.AbstractContainerMenu menuBefore = player.containerMenu;
         BlockHitResult hit;
         if (presetHit != null) {
             hit = presetHit;                                  // caller already resolved the support face
@@ -351,6 +391,7 @@ public final class Interaction {
             if (res.consumesAction()) {
                 player.swing(h);
                 lastUseOutcome = "consumed (" + handName + "=" + res + ")";
+                MenuOrigin.pressed(player, menuBefore, hit.getBlockPos());
                 return true;
             }
             if (outcome.length() > 0) outcome.append(", ");
@@ -408,11 +449,14 @@ public final class Interaction {
         }
         InputDriver.halt(player);
         InputDriver.lookAt(player, entity.getEyePosition());
+        net.minecraft.world.inventory.AbstractContainerMenu menuBefore = player.containerMenu;
         for (InteractionHand h : HANDS) {
             if (entity.interact(player, h).consumesAction()) {       // animals / villagers
+                MenuOrigin.pressed(player, menuBefore, null);
                 return true;
             }
             if (player.interactOn(entity, h).consumesAction()) {     // item frames / leads
+                MenuOrigin.pressed(player, menuBefore, null);
                 return true;
             }
         }
@@ -424,8 +468,7 @@ public final class Interaction {
     private BlockHitResult raycastBlock() {
         Level level = player.level();
         Vec3 eye = player.getEyePosition();
-        Vec3 look = player.getViewVector(1.0f);
-        Vec3 end = eye.add(look.x * REACH, look.y * REACH, look.z * REACH);
+        Vec3 end = eye.add(player.getViewVector(1.0f).scale(com.dwinovo.numen.platform.Services.PLATFORM.blockInteractionRange(player)));
         BlockHitResult hit = level.clip(new ClipContext(
                 eye, end, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
         if (hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(block)) {

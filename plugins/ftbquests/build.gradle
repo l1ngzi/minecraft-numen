@@ -1,0 +1,36 @@
+plugins {
+    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+    id 'numen-plugin'
+}
+
+// The slim API task must be configured before it is selected.
+evaluationDependsOn(':api:forge')
+
+// 只接 Forge:本联动直接订阅 FTB Quests / FTB Teams 的 Architectury 事件、读它们的队伍与进度,
+// 编译对着 Forge 那份。
+minecraft { mappings channel: 'official', version: minecraft_version }
+
+repositories {
+    // FTB 全家与 Architectury 各自只从自己的仓库取,两个仓库也截不走别的坐标
+    // ForgeGradle serves _mapped_ versions from its generated repository.
+    exclusiveContent {
+        forRepository { maven { name = 'FTB'; url = 'https://maven.ftb.dev/releases' } }
+        filter { includeVersionByRegex('dev\\.ftb\\.mods', '.*', '^(?!.*_mapped_).*$') }
+    }
+    exclusiveContent {
+        forRepository { maven { name = 'Architectury'; url = 'https://maven.architectury.dev/' } }
+        filter { includeVersionByRegex('dev\\.architectury', '.*', '^(?!.*_mapped_).*$') }
+    }
+}
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+    // 瘦 api jar 取 Forge 那份:本联动本来就只跑在 Forge 上
+    compileOnly files(project(':api:forge').tasks.named('apiJar'))
+    // FTB 全家是 All Rights Reserved:只在编译期引用,运行时由玩家自己装的那份提供,
+    // 本模块不携带、不复制它们一个字节。Architectury 是 FTB 的事件总线所在。
+    compileOnly fg.deobf("dev.ftb.mods:ftb-quests-forge:${ftb_quests_version}")
+    compileOnly fg.deobf("dev.ftb.mods:ftb-teams-forge:${ftb_teams_version}")
+    compileOnly fg.deobf("dev.ftb.mods:ftb-library-forge:${ftb_library_version}")
+    compileOnly fg.deobf("dev.architectury:architectury-forge:${architectury_version}")
+}

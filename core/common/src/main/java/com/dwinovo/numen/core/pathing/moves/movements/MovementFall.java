@@ -5,15 +5,14 @@ import java.util.HashSet;
 import java.util.Set;
 
 import com.dwinovo.numen.core.pathing.moves.CalculationContext;
-import com.dwinovo.numen.core.pathing.moves.TerrainPermit;
 import com.dwinovo.numen.core.pathing.moves.ChunkLoadedTest;
 import com.dwinovo.numen.core.pathing.moves.Input;
 import com.dwinovo.numen.core.pathing.moves.Movement;
-import com.dwinovo.numen.core.pathing.moves.MovementHelper;
 import com.dwinovo.numen.core.pathing.moves.MovementState;
 import com.dwinovo.numen.core.pathing.moves.MovementStatus;
 import com.dwinovo.numen.core.pathing.moves.MutableMoveResult;
-import com.dwinovo.numen.core.pathing.settings.NavSettings;
+import com.dwinovo.numen.core.pathing.spec.CellClass;
+import com.dwinovo.numen.core.pathing.spec.RouteSpec;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -33,8 +32,8 @@ import static com.dwinovo.numen.core.pathing.moves.ActionCosts.COST_INF;
 /** 坠落 ≥2 格:走出边缘垂直下落到落点,超过安全高度时空中放水桶接底。 */
 public class MovementFall extends Movement {
 
-    public MovementFall(ServerPlayer player, BlockPos src, BlockPos dest) {
-        super(player, src, dest, buildPositionsToBreak(src, dest));
+    public MovementFall(ServerPlayer player, RouteSpec spec, BlockPos src, BlockPos dest) {
+        super(player, spec, src, dest, buildPositionsToBreak(src, dest));
     }
 
     /** 成本复用下降原语的坠落分档;落点不符则本实例不适用。 */
@@ -63,7 +62,8 @@ public class MovementFall extends Movement {
     private boolean willPlaceBucket() {
         // 只问要不要放水桶(hasWaterBucket),与地形许可无关;MLG 放水再收回,不改世界
         CalculationContext context = new CalculationContext(player, player.level(),
-                ChunkLoadedTest.ALWAYS, false, TerrainPermit.PRESERVE);
+                ChunkLoadedTest.ALWAYS, false, spec,
+                com.dwinovo.numen.permission.Permission.gateFor((com.dwinovo.numen.entity.NumenPlayer) player));
         MutableMoveResult result = new MutableMoveResult();
         return MovementDescend.dynamicFallCost(context, src.getX(), src.getY(), src.getZ(),
                 dest.getX(), dest.getZ(), 0,
@@ -90,7 +90,7 @@ public class MovementFall extends Movement {
             if (bucketSlot == -1 || level.dimension() == Level.NETHER) {
                 return state.setStatus(MovementStatus.UNREACHABLE);
             }
-            if (player.getY() - dest.getY() < NavSettings.get().blockReachDistance
+            if (player.getY() - dest.getY() < com.dwinovo.numen.platform.Services.PLATFORM.blockInteractionRange(player)
                     && !player.onGround()) {
                 // 够得着落点了:切水桶、竖直向下瞄,命中落点即放水
                 player.getInventory().selected = bucketSlot;
@@ -198,7 +198,7 @@ public class MovementFall extends Movement {
             return true;
         }
         for (int i = 0; i < 4 && i < positionsToBreak.length; i++) {
-            if (!MovementHelper.canWalkThrough(player.level(), positionsToBreak[i])) {
+            if (!CellClass.canWalkThrough(player.level(), positionsToBreak[i], spec)) {
                 return super.prepared(state);
             }
         }

@@ -1,6 +1,7 @@
 package com.dwinovo.numen.task;
 
 import com.dwinovo.numen.agent.tool.api.ToolContext;
+import com.dwinovo.numen.cli.ServerSource;
 import com.dwinovo.numen.entity.NumenPlayer;
 import com.google.gson.JsonObject;
 
@@ -40,15 +41,16 @@ public final class TaskDispatch {
     }
 
     /**
-     * 同步动作:回合挂着等它跑完。<b>不回执</b>——结果由任务结算时送回,
-     * 客户端严格串行的工具派发器因此自然把同批的同步动作一个接一个排开,
-     * 这里不需要队列也不会撞车。
+     * 同步动作:回合挂着等它跑完。<b>当场不回执</b>——任务结算时结果经 {@code reply} 送回,这是这次调用唯一的
+     * 回信口(谁派的就回给谁:模型的调用、{@code /numen drive} 的发令人)。客户端严格串行的工具派发器因此自然把
+     * 同批的同步动作一个接一个排开,这里不需要队列也不会撞车。
      *
      * <p>它排在<b>当前任务之上</b>(见 {@link TaskSelector}):有人挂着等它,
      * 而队首的长活可能几分钟——让它排在后面等于把对话卡到 deadline。
      * 反过来它有界短,插队也饿不死别人。
      */
     public static void runSync(NumenPlayer companion, TaskRecord record, Consumer<String> reply) {
+        record.replyTo(reply);
         CompanionTickDispatcher.syncSlotFor(companion.getUUID()).put(companion, record);
     }
 
@@ -62,8 +64,25 @@ public final class TaskDispatch {
      * 那说明模型在一个回合里连派两件活——它该拿到第一件的结果、看清状况再决定下一步,
      * 而不是盲目承诺。这条判据本地可判({@link TaskRecord#acceptedThisTick}),
      * 不用把回合 id 穿到服务端。
+     *
+     * <p>这是工具派活的写法:记录以工具名命名,重启后按这个名字找回那个工具、带 {@code args} 重放。
      */
     public static void setTask(NumenPlayer companion, TaskRecord record, JsonObject args,
+                               Consumer<String> reply) {
+        accept(companion, record, record.getToolName(), args, reply);
+    }
+
+    /**
+     * 命令派活的写法,规矩同上。记录的名字是给模型看的"组 动作"({@link ServerSource#taskName()}),不是能重放的
+     * 工具名,所以重放记的是这次调用本身({@link ServerSource#toolName()} 与 {@link ServerSource#args()}):
+     * 从 {@code command} 进来就重放那一行指令,从快捷工具进来就重放那次工具调用。
+     */
+    public static void setTask(ServerSource source, TaskRecord record) {
+        accept(source.companion(), record, source.toolName(), source.args(), source::reply);
+    }
+
+    /** @param replayTool 重启后重放用的工具名,与 {@code args} 一起就是那次调用 */
+    private static void accept(NumenPlayer companion, TaskRecord record, String replayTool, JsonObject args,
                                Consumer<String> reply) {
         java.util.UUID id = companion.getUUID();
         if (CompanionTickDispatcher.currentFreshlyAccepted(companion)) {
@@ -82,7 +101,7 @@ public final class TaskDispatch {
         record.markAsync();
         CompanionTickDispatcher.currentSlotFor(id).put(companion, record);
         // 记下"她现在在做什么",服务器重启后照着重放一遍(见 TaskPersistence)。
-        TaskPersistence.remember(companion, record.getToolName(), args);
+        TaskPersistence.remember(companion, record.getToolName(), replayTool, args);
         // 内置大脑靠 task_finished 事件收尾(别轮询);外部(MCP)夺舍收不到事件
         // (那条投给内置大脑,不是它),得自己轮询 task_status 到身体空闲,再感知确认。
         // 常驻的活没有终点,也就永远不会发 task_finished —— 回执必须说清楚,

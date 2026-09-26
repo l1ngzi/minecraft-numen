@@ -70,6 +70,32 @@ public final class ModLanguageData {
         public static final String GUI_PROVIDERS_THINKING_ON        = "numen.gui.providers.thinking.on";
         public static final String RESPAWN_BLOCKED                  = "numen.respawn.blocked";
 
+        // 征询:同伴等主人点头时对话流里那条带内联按钮的消息(ConsentMessage)与右上角的 toast。
+        public static final String CONSENT_ALLOW          = "numen.consent.allow";
+        public static final String CONSENT_ALLOW_REMEMBER = "numen.consent.allow_remember";
+        public static final String CONSENT_DENY           = "numen.consent.deny";
+        public static final String CONSENT_NOTE_ROW       = "numen.consent.note_row";
+        public static final String CONSENT_ASKING         = "numen.consent.asking";
+        public static final String CONSENT_WITHDRAWN      = "numen.consent.withdrawn";
+        /** 第四个按钮与点了它之后输入框上方那条提示栏的抬头。 */
+        public static final String CONSENT_DENY_NOTE      = "numen.consent.deny_note";
+        /** 答完以后消息下面那条结果:点了哪个键、拒绝时说的那句、在别处(命令)答的。 */
+        public static final String CONSENT_CHOSE          = "numen.consent.chose";
+        public static final String CONSENT_DENIED_SAYING  = "numen.consent.denied_saying";
+        public static final String CONSENT_ANSWERED_ELSEWHERE = "numen.consent.answered_elsewhere";
+        /** 清单一堆前面那个短动词,后接 {@code break}、{@code attack}、{@code command}……。 */
+        public static final String CONSENT_VERB_PREFIX    = "numen.consent.verb.";
+        /** 征询那条的问话:一件事是"想挖 [原木]×6,可以吗?"(%s 是动词加东西),几件事是一句总问。 */
+        public static final String CONSENT_ASK            = "numen.consent.ask";
+        public static final String CONSENT_ASK_MANY       = "numen.consent.ask_many";
+        /** 信号给主人看的自述,后接规则里的信号名({@code placed}……)。 */
+        public static final String PERMISSION_SIGNAL_PREFIX = "numen.permission.signal.";
+        public static final String PERMISSION_PLACED_BY   = "numen.permission.placed_by";
+        public static final String PERMISSION_UNCOVERED   = "numen.permission.uncovered";
+        public static final String CONSENT_SECONDS        = "numen.consent.seconds";
+        public static final String PERMISSION_SEPARATOR   = "numen.permission.separator";
+        public static final String PERMISSION_A_BLOCK     = "numen.permission.a_block";
+
         /** Hotkey: open the companion roster panel (shown in Controls settings). */
         public static final String KEY_OPEN_ROSTER = "key.numen.open_roster";
 
@@ -118,6 +144,39 @@ public final class ModLanguageData {
         public static final String EDIT_PROVIDER_UNBOUND = "numen.edit.provider_unbound";
         public static final String EDIT_MODE_LOCKED      = "numen.edit.mode_locked";
 
+        // Conversation header: invite card, rename card, dissolve confirm.
+        public static final String CONVO_INVITE           = "numen.convo.invite";
+        public static final String CONVO_INVITE_TITLE     = "numen.convo.invite_title";
+        public static final String CONVO_INVITE_CONFIRM   = "numen.convo.invite_confirm";
+        public static final String CONVO_RENAME           = "numen.convo.rename";
+        public static final String CONVO_NAME_LABEL       = "numen.convo.name_label";
+        public static final String CONVO_DISSOLVE         = "numen.convo.dissolve";
+        public static final String CONVO_DISSOLVE_TITLE   = "numen.convo.dissolve_title";
+        public static final String CONVO_DISSOLVE_WARNING = "numen.convo.dissolve_warning";
+        public static final String CONVO_DROP             = "numen.convo.drop";
+
+        // Header status line (Telegram's "online / typing…") and transcript date chips.
+        public static final String HEADER_ONLINE          = "numen.header.online";
+        public static final String HEADER_TYPING          = "numen.header.typing";
+        public static final String HEADER_BUSY            = "numen.header.busy";
+        public static final String HEADER_COMPACTING      = "numen.header.compacting";
+        public static final String HEADER_MEMBERS         = "numen.header.members";
+        /** 点抬头名字打开的资料页(Telegram 的个人信息),和左栏 ☰ 的设置。 */
+        public static final String HEADER_PROFILE         = "numen.header.profile";
+        public static final String HEADER_MORE            = "numen.header.more";
+        public static final String MENU_PROFILE           = "numen.menu.profile";
+        public static final String MENU_GROUP_INFO        = "numen.menu.group_info";
+        public static final String CHAT_TODAY             = "numen.chat.today";
+        public static final String CHAT_YESTERDAY         = "numen.chat.yesterday";
+        public static final String CHAT_DATE_MD           = "numen.chat.date_md";
+        public static final String CHAT_DATE_YMD          = "numen.chat.date_ymd";
+        /** 左栏最后一句里"你说的"那个前缀。 */
+        public static final String RAIL_YOU               = "numen.rail.you";
+        public static final String RAIL_EMPTY             = "numen.rail.empty";
+        public static final String RAIL_SEARCH            = "numen.rail.search";
+        public static final String RAIL_DRAFT             = "numen.rail.draft";
+        public static final String RAIL_NO_MATCH          = "numen.rail.no_match";
+
         // Skin library tab (upload png → MineSkin-signed textures).
         public static final String SKIN_TITLE           = "numen.skin.title";
         public static final String SKIN_ADD             = "numen.skin.add";
@@ -145,7 +204,7 @@ public final class ModLanguageData {
         public static final String SUMMON_WARN_NAME        = "numen.summon.warn_name";
         public static final String SUMMON_WARN_PROVIDER    = "numen.summon.warn_provider";
 
-        // Endpoint problems surfaced in chat (EntityAgentLoop#endpointProblem).
+        // Endpoint problems: the kernel holds BLOCKED with this text as the reason (EntityAgentLoop#endpointProblem).
         public static final String ENDPOINT_UNBOUND = "numen.endpoint.unbound";
         public static final String ENDPOINT_NO_KEY  = "numen.endpoint.no_key";
 
@@ -199,13 +258,31 @@ public final class ModLanguageData {
 
         // STT (voice input)
         public static final String STT_NAV            = "numen.settings.nav.stt";
-        public static final String STT_TITLE          = "numen.stt.title";
         public static final String STT_MICROPHONE     = "numen.stt.microphone";
         public static final String STT_MIC_DEFAULT    = "numen.stt.mic_default";
         public static final String STT_NOT_CONFIGURED = "numen.stt.not_configured";
         public static final String STT_NO_MIC         = "numen.stt.no_mic";
         public static final String STT_SILENT         = "numen.stt.silent";
         public static final String STT_FAILED         = "numen.stt.failed";
+
+        // 会话分组(左栏顶上那排标签,Telegram 的 Chat Folders)
+        public static final String FOLDER_ALL   = "numen.folder.all";
+        public static final String FOLDER_SOLO  = "numen.folder.solo";
+        public static final String FOLDER_GROUP = "numen.folder.group";
+        public static final String FOLDER_EMPTY = "numen.folder.empty";
+        public static final String FOLDER_NEW            = "numen.folder.new";
+        public static final String FOLDER_EDIT           = "numen.folder.edit";
+        public static final String FOLDER_DELETE         = "numen.folder.delete";
+        public static final String FOLDER_DELETE_TITLE   = "numen.folder.delete_title";
+        public static final String FOLDER_DELETE_WARNING = "numen.folder.delete_warning";
+        public static final String FOLDER_ADD_TO         = "numen.folder.add_to";
+        public static final String FOLDER_NAME           = "numen.folder.name";
+        public static final String FOLDER_CHATS          = "numen.folder.chats";
+        // 消息通知(右下角的小卡)
+        public static final String SETTINGS_MESSAGE_NOTICES = "numen.settings.message_notices";
+        // 面板里的对话框卡的标题
+        public static final String EDIT_COMPANION_TITLE = "numen.edit.companion_title";
+        public static final String CONVO_EDIT_TITLE     = "numen.convo.edit_title";
     }
 
     /** Loader-side providers funnel both English and Simplified Chinese through here. */
@@ -234,8 +311,6 @@ public final class ModLanguageData {
         adder.add(Keys.KEY_CATEGORY_NUMEN, "Numen");
 
         // --- consolidated into the datagen source (persona / mcp / reasoning / tabs / status ...) ---
-        adder.add("numen.tab.chat", "Chat");
-        adder.add("numen.tab.status", "Status");
         adder.add("numen.tab.settings", "Settings");
         adder.add("numen.settings.nav.llm", "Models");
         adder.add("numen.settings.nav.mcp", "MCP Tools");
@@ -244,61 +319,49 @@ public final class ModLanguageData {
         adder.add("numen.settings.nav.theme", "Theme");
         // 外接大脑(我们当 MCP 服务器)——与"工具扩展"方向相反的那一半
         adder.add("numen.brain.title", "External Brain (MCP)");
+        adder.add("numen.brain.enable", "Enable external brain");
         adder.add("numen.brain.toggle", "External-brain mode");
-        adder.add("numen.brain.hint_on",
-                "On — an outside AI drives your companions; the built-in brain is paused.");
-        adder.add("numen.brain.hint_off",
-                "Off — companions think with their own brain and answer you in chat.");
         adder.add("numen.brain.start_failed", "Could not start the server: %s");
         adder.add("numen.brain.endpoint", "Endpoint");
         adder.add("numen.brain.token", "Access token");
         adder.add("numen.brain.token_none", "not set (loopback only)");
         adder.add("numen.brain.copy", "Copy");
         adder.add("numen.brain.copy_prompt", "Copy setup prompt");
-        adder.add("numen.brain.prompt_warn",
-                "The prompt contains your local token — only send it to an AI you trust.");
+        adder.add("numen.brain.prompt_warn", "Holds your local token.");
         adder.add("numen.brain.copied", "✔ Copied");
-        adder.add("numen.brain.status_off", "Server stopped");
-        adder.add("numen.brain.status_waiting", "Waiting for a client to connect…");
-        adder.add("numen.brain.status_connected", "%s · active %s");
+        adder.add("numen.brain.status_waiting", "waiting");
+        adder.add("numen.brain.status_connected", "%s · %s");
         adder.add("numen.brain.since_sec", "%ds ago");
         adder.add("numen.brain.since_min", "%dmin ago");
         adder.add("numen.brain.console_title", "External brain console");
         adder.add("numen.brain.console_empty", "Say something below, or wait for the AI to act — the conversation shows up here.");
         adder.add("numen.brain.quiet_standby", "The external brain has gone quiet — your companion is standing by.");
         adder.add("numen.brain.quiet_fallback", "The external brain has gone quiet — the built-in brain is taking over until it returns.");
+        adder.add("numen.brain.advanced", "Advanced");
         adder.add("numen.brain.back_active", "The external brain is back.");
-        adder.add("numen.brain.fallback_toggle", "Built-in brain takes over when quiet");
+        adder.add("numen.brain.quiet_toggle", "Disconnect after %s min of silence");
         adder.add("numen.brain.guide_title", "Connect an external AI");
         adder.add("numen.brain.guide_step",
                 "Copy the setup prompt in Settings → MCP Brain, paste it to your AI, and it configures the rest.");
-        adder.add("numen.brain.running", "running");
-        adder.add("numen.brain.stopped", "stopped");
-        adder.add("numen.brain.status", "Status");
-        adder.add("numen.brain.settings", "Settings");
-        adder.add("numen.brain.settings_title", "External Brain · Settings");
-        adder.add("numen.brain.back", "Back");
         adder.add("numen.brain.regenerate", "New token");
         adder.add("numen.brain.regen_confirm_title", "Issue a new token?");
         adder.add("numen.brain.regen_confirm_body",
                 "Any AI already connected is disconnected at once and needs the new setup prompt.");
-        adder.add("numen.brain.lan", "Allow connections from your local network");
+        adder.add("numen.brain.lan", "Allow LAN connections");
         adder.add("numen.brain.lan_warn",
                 "Anyone on your network can drive your companions — keep the token set.");
         adder.add("numen.brain.lan_needs_token",
                 "A token is required once the network can reach it.");
         adder.add("numen.brain.port", "Port");
-        adder.add("numen.brain.timeout", "Call timeout (s)");
-        adder.add("numen.brain.hidden_tools", "Tools kept from the outside AI");
+        adder.add("numen.brain.timeout", "Timeout (s)");
+        adder.add("numen.brain.hidden_tools", "Hidden tools");
         adder.add("numen.brain.hidden_hint", "comma separated");
         adder.add("numen.brain.save", "Save");
         adder.add("numen.brain.save_restart", "Save & restart");
         adder.add("numen.brain.saved", "✔ Saved");
         adder.add("numen.brain.port_range", "Port must be between 1 and 65535.");
         adder.add("numen.brain.port_taken", "Port %d is already in use.");
-        adder.add("numen.settings.theme.title", "Theme");
         adder.add(Keys.STT_NAV, "Voice input");
-        adder.add(Keys.STT_TITLE, "Voice input (STT)");
         adder.add(Keys.STT_MICROPHONE, "Microphone");
         adder.add(Keys.STT_MIC_DEFAULT, "(default microphone)");
         adder.add(Keys.STT_NOT_CONFIGURED, "Voice input not configured — set an STT API key in settings");
@@ -334,15 +397,14 @@ public final class ModLanguageData {
         adder.add("numen.chat.tip.mic_stop", "Stop recording");
         adder.add("numen.chat.tip.stop", "Stop the turn");
         adder.add("numen.chat.hint", "Talk to %s…");
-        adder.add("numen.chat.no_key", "⚠ No API key — open Settings to add one");
         adder.add("numen.chat.empty", "Say something to %s.");
-        adder.add("numen.chat.compacting", "compacting history…");
-        adder.add("numen.chat.compacted", "─── earlier conversation compacted to a summary (originals kept on disk) ───");
-        adder.add("numen.chat.cleared", "─── context cleared — she starts fresh (chat log kept) ───");
-        adder.add("numen.chat.persona_changed", "─── persona switched ───");
+        adder.add("numen.chat.compacting", "Compacting history…");
+        adder.add("numen.chat.compacted", "Earlier conversation compacted to a summary (originals kept on disk)");
+        adder.add("numen.chat.cleared", "Context cleared — she starts fresh (chat log kept)");
+        adder.add("numen.chat.persona_changed", "Persona switched");
+        adder.add("numen.chat.halted", "Interrupted: %s");
         adder.add("numen.chat.steps", "%s steps");
-        adder.add("numen.chat.plan", "PLAN");
-        adder.add("numen.chat.no_plan", "no plan yet");
+        adder.add("numen.chat.plan", "Plan %s/%s");
         // Tool-chip labels (convention: numen.tool.<tool name>; unknown/MCP tools fall back to the raw name).
         adder.add("numen.tool.build", "Build");
         adder.add("numen.tool.close_gui", "Close GUI");
@@ -387,7 +449,6 @@ public final class ModLanguageData {
         adder.add("numen.mcp.connecting", "%s · connecting…");
         adder.add("numen.mcp.failed", "%s · failed");
         adder.add("numen.mcp.disabled", "%s · off");
-        adder.add("numen.skill.title", "Skills");
         adder.add("numen.skill.empty", "None · drop into config/numen/skills");
         adder.add("numen.skill.open_dir", "＋ Folder");
         adder.add("numen.skill.no_desc", "(no description)");
@@ -396,7 +457,7 @@ public final class ModLanguageData {
         adder.add("numen.dismiss.delete", "Delete");
         adder.add("numen.dismiss.title", "Delete companion \"%s\"?");
         adder.add("numen.dismiss.warning", "Permanent · backpack drops in place · cannot be undone");
-        adder.add("numen.empty.no_companions", "No companions. Click + to summon one.");
+        adder.add("numen.empty.no_companions", "No companions yet");
         adder.add("numen.respawn", "· reviving %ss");
         adder.add("numen.status.loading", "loading…");
         adder.add("numen.status.asleep", "asleep — chat to wake it.");
@@ -431,6 +492,33 @@ public final class ModLanguageData {
         adder.add(Keys.EDIT_DISMISS,          "Dismiss");
         adder.add(Keys.EDIT_PROVIDER_UNBOUND, "(unbound)");
         adder.add(Keys.EDIT_MODE_LOCKED,      "No cheat/OP permission — her mode can't be changed");
+        adder.add(Keys.CONVO_INVITE,           "Invite");
+        adder.add(Keys.CONVO_INVITE_TITLE,     "Invite companions");
+        adder.add(Keys.CONVO_INVITE_CONFIRM,   "Invite");
+        adder.add(Keys.CONVO_RENAME,           "Rename");
+        adder.add(Keys.CONVO_NAME_LABEL,       "Name");
+        adder.add(Keys.CONVO_DISSOLVE,         "Dissolve");
+        adder.add(Keys.CONVO_DISSOLVE_TITLE,   "Dissolve \"%s\"?");
+        adder.add(Keys.CONVO_DISSOLVE_WARNING, "What was said stays in each companion's own log");
+        adder.add(Keys.CONVO_DROP,             "Remove %s from this conversation");
+        adder.add(Keys.HEADER_ONLINE,          "online");
+        adder.add(Keys.HEADER_TYPING,          "typing");
+        adder.add(Keys.HEADER_BUSY,            "busy");
+        adder.add(Keys.HEADER_COMPACTING,      "tidying memory");
+        adder.add(Keys.HEADER_MEMBERS,         "%s members");
+        adder.add(Keys.HEADER_PROFILE,         "Profile");
+        adder.add(Keys.HEADER_MORE,            "More");
+        adder.add(Keys.MENU_PROFILE,           "View profile");
+        adder.add(Keys.MENU_GROUP_INFO,        "View group info");
+        adder.add(Keys.CHAT_TODAY,             "Today");
+        adder.add(Keys.CHAT_YESTERDAY,         "Yesterday");
+        adder.add(Keys.CHAT_DATE_MD,           "%s/%s");
+        adder.add(Keys.CHAT_DATE_YMD,          "%s/%s/%s");
+        adder.add(Keys.RAIL_YOU,               "You");
+        adder.add(Keys.RAIL_EMPTY,             "No messages yet");
+        adder.add(Keys.RAIL_SEARCH,            "Search");
+        adder.add(Keys.RAIL_DRAFT,             "Draft");
+        adder.add(Keys.RAIL_NO_MATCH,          "No matches");
         adder.add(Keys.SKIN_TITLE,           "Skins");
         adder.add(Keys.SKIN_ADD,             "New");
         adder.add(Keys.SKIN_EMPTY,           "No skins yet. Click New, then drag a skin png into the window.");
@@ -447,7 +535,51 @@ public final class ModLanguageData {
         adder.add(Keys.SKIN_SIGN_OK,         "\"%s\" signed");
         adder.add("numen.summon.mode",       "Mode");
         adder.add("numen.bubble.thinking",   "✦ Thinking");
+        adder.add("numen.bubble.asking",     "⌛ Waiting for your OK");
         adder.add("numen.chat.reasoning",    "Reasoning");
+        adder.add("numen.chat.reasoning_now", "Thinking");
+        adder.add("numen.pin.goal", "Goal");
+        adder.add("numen.pin.goal_meta", "Turn %s · %s");
+        adder.add("numen.menu.copy", "Copy text");
+        adder.add("numen.menu.reply", "Reply");
+        adder.add("numen.menu.pin", "Pin");
+        adder.add("numen.menu.unpin", "Unpin");
+        adder.add("numen.menu.read", "Mark as read");
+        adder.add("numen.menu.night", "Night mode");
+        adder.add("numen.menu.day", "Day mode");
+        adder.add("numen.menu.clone", "Clone");
+        adder.add("numen.menu.use", "Use for her");
+        adder.add("numen.menu.stop_using", "Stop using");
+        adder.add("numen.chat.reply_to", "Reply to %s");
+        adder.add("numen.chat.unread_bar", "Unread messages");
+        adder.add("numen.chat.find", "Search this chat");
+        adder.add("numen.chat.find_none", "No results");
+        adder.add("numen.profile.persona", "Persona");
+        adder.add("numen.profile.persona_default", "Default persona");
+        adder.add("numen.profile.model", "Model");
+        adder.add("numen.profile.model_none", "Not set");
+        adder.add("numen.profile.model_deleted", "Entry deleted");
+        adder.add("numen.profile.voice", "Voice");
+        adder.add("numen.profile.voice_none", "None");
+        adder.add("numen.profile.context", "Context");
+        adder.add("numen.profile.context_value", "%s%% · %s lines");
+        adder.add("numen.profile.doing", "%s");
+        adder.add("numen.profile.bio", "Bio");
+        adder.add("numen.profile.memories", "Memory");
+        adder.add("numen.profile.memories_none", "Nothing remembered yet");
+        adder.add("numen.profile.memories_more", "%s more");
+        adder.add("numen.profile.note_meta", "Day %s · %s");
+        adder.add("numen.profile.groups", "Groups in common");
+        adder.add("numen.profile.backpack", "Backpack · %s items");
+        adder.add("numen.profile.settings", "Settings");
+        adder.add("numen.profile.distance", "Distance");
+        adder.add("numen.profile.here", "Right here");
+        adder.add("numen.profile.meters", "%s m %s");
+        adder.add("numen.profile.away", "Not nearby");
+        adder.add("numen.profile.mode", "Game mode");
+        adder.add("numen.profile.message", "Message");
+        adder.add("numen.profile.creative", "Creative");
+        adder.add("numen.profile.survival", "Survival");
         adder.add("numen.summon.fetching_skin", "Fetching skin…");
         adder.add("numen.summon.persona_missing", "Chosen persona is gone (file deleted?), using the default");
         adder.add("numen.summon.voice_missing", "Chosen voice is gone (entry deleted?), she stays silent for now");
@@ -548,6 +680,62 @@ public final class ModLanguageData {
         adder.add(Keys.GUI_PROVIDERS_THINKING_OFF,      "Off");
         adder.add(Keys.GUI_PROVIDERS_THINKING_ON,       "On");
         adder.add(Keys.RESPAWN_BLOCKED,                 "· waiting for room to land");
+        adder.add(Keys.CONSENT_ALLOW,          "Allow");
+        adder.add(Keys.CONSENT_ALLOW_REMEMBER, "Always allow");
+        adder.add(Keys.CONSENT_DENY,           "Deny");
+        adder.add(Keys.CONSENT_NOTE_ROW,       "No, tell %s what to do instead…");
+        adder.add(Keys.CONSENT_ASKING,         "%s asks for your consent — press [%s] to answer");
+        adder.add(Keys.CONSENT_WITHDRAWN,      "%s's request went away: %s");
+        // 撤回的原因:服务端只说是哪一种(ConsentDesk.Withdrawal),主人的客户端按这里的文案显示
+        adder.add(com.dwinovo.numen.permission.ConsentDesk.Withdrawal.OWNER_ABSENT.key(), "no answer came in time");
+        adder.add(com.dwinovo.numen.permission.ConsentDesk.Withdrawal.SUPERSEDED.key(), "a newer request replaced it");
+        adder.add(com.dwinovo.numen.permission.ConsentDesk.Withdrawal.UNNEEDED.key(), "it no longer needs your answer");
+        adder.add(com.dwinovo.numen.permission.ConsentDesk.Withdrawal.TASK_ENDED.key(), "the task that asked has ended");
+        adder.add(com.dwinovo.numen.permission.ConsentDesk.Withdrawal.OWNER_STOPPED.key(), "you pressed Stop");
+        adder.add(com.dwinovo.numen.permission.ConsentDesk.Withdrawal.BODY_LEFT.key(), "she left the world");
+        adder.add(com.dwinovo.numen.permission.ConsentDesk.Withdrawal.DIED.key(), "she died");
+        adder.add(Keys.CONSENT_DENY_NOTE,      "Deny with a note");
+        adder.add(Keys.CONSENT_CHOSE,          "You chose “%s”");
+        adder.add(Keys.CONSENT_DENIED_SAYING,  "You said no: %s");
+        adder.add(Keys.CONSENT_ANSWERED_ELSEWHERE, "Answered elsewhere");
+        adder.add(Keys.CONSENT_ASK,            "May I %s?");
+        adder.add(Keys.CONSENT_ASK_MANY,       "May I do these?");
+        adder.add(Keys.CONSENT_VERB_PREFIX + "break",      "break");
+        adder.add(Keys.CONSENT_VERB_PREFIX + "place",      "place");
+        adder.add(Keys.CONSENT_VERB_PREFIX + "attack",     "attack");
+        adder.add(Keys.CONSENT_VERB_PREFIX + "use_block",  "use");
+        adder.add(Keys.CONSENT_VERB_PREFIX + "use_entity", "use");
+        adder.add(Keys.CONSENT_VERB_PREFIX + "take",       "take from");
+        adder.add(Keys.CONSENT_VERB_PREFIX + "drop",       "drop");
+        adder.add(Keys.CONSENT_VERB_PREFIX + "command",    "run");
+        adder.add(Keys.PERMISSION_SIGNAL_PREFIX + "placed",       "placed by a player");
+        adder.add(Keys.PERMISSION_SIGNAL_PREFIX + "block_entity", "functional block");
+        adder.add(Keys.PERMISSION_SIGNAL_PREFIX + "contents",     "has things inside");
+        adder.add(Keys.PERMISSION_SIGNAL_PREFIX + "owned",        "has an owner");
+        adder.add(Keys.PERMISSION_SIGNAL_PREFIX + "named",        "named");
+        adder.add(Keys.PERMISSION_SIGNAL_PREFIX + "villager",     "villager");
+        adder.add(Keys.PERMISSION_SIGNAL_PREFIX + "hostile",      "hostile");
+        adder.add(Keys.PERMISSION_SIGNAL_PREFIX + "hazard_item",  "dangerous");
+        adder.add(Keys.PERMISSION_PLACED_BY,   "placed by %s");
+        adder.add(Keys.PERMISSION_UNCOVERED,   "no rule");
+        adder.add(Keys.CONSENT_SECONDS,        "%ss");
+        adder.add(Keys.PERMISSION_SEPARATOR,   ", ");
+        adder.add(Keys.PERMISSION_A_BLOCK,     "a block");
+        adder.add(Keys.FOLDER_ALL,   "All");
+        adder.add(Keys.FOLDER_SOLO,  "Private");
+        adder.add(Keys.FOLDER_GROUP, "Groups");
+        adder.add(Keys.FOLDER_EMPTY, "No chats in this folder");
+        adder.add(Keys.FOLDER_NEW,            "New folder");
+        adder.add(Keys.FOLDER_EDIT,           "Edit folder");
+        adder.add(Keys.FOLDER_DELETE,         "Delete folder");
+        adder.add(Keys.FOLDER_DELETE_TITLE,   "Delete folder \"%s\"?");
+        adder.add(Keys.FOLDER_DELETE_WARNING, "The chats in it won't be deleted");
+        adder.add(Keys.FOLDER_ADD_TO,         "Add to folder…");
+        adder.add(Keys.FOLDER_NAME,           "Folder name");
+        adder.add(Keys.FOLDER_CHATS,          "Chats in this folder");
+        adder.add(Keys.SETTINGS_MESSAGE_NOTICES, "Message notifications (a card for chats you aren't viewing)");
+        adder.add(Keys.EDIT_COMPANION_TITLE,   "Edit companion");
+        adder.add(Keys.CONVO_EDIT_TITLE,       "Edit conversation");
     }
 
     private static void addZh(Adder adder) {
@@ -566,8 +754,6 @@ public final class ModLanguageData {
         adder.add(Keys.KEY_QUICK_VOICE, "快捷语音(按住)");
 
         // --- consolidated into the datagen source (persona / mcp / reasoning / tabs / status ...) ---
-        adder.add("numen.tab.chat", "对话");
-        adder.add("numen.tab.status", "状态");
         adder.add("numen.tab.settings", "设置");
         adder.add("numen.settings.nav.llm", "模型接入");
         adder.add("numen.settings.nav.mcp", "工具扩展");
@@ -576,37 +762,30 @@ public final class ModLanguageData {
         adder.add("numen.settings.nav.theme", "主题");
         // 外接大脑(我们当 MCP 服务器)——与"工具扩展"方向相反的那一半
         adder.add("numen.brain.title", "外接大脑 (MCP)");
+        adder.add("numen.brain.enable", "开启外接大脑");
         adder.add("numen.brain.toggle", "外接大脑模式");
-        adder.add("numen.brain.hint_on", "已开启——同伴交给外部 AI 驱动,内置大脑暂停。");
-        adder.add("numen.brain.hint_off", "已关闭——同伴用自己的大脑思考,在聊天里回你。");
         adder.add("numen.brain.start_failed", "服务器启动失败:%s");
         adder.add("numen.brain.endpoint", "接入端点");
         adder.add("numen.brain.token", "访问令牌");
         adder.add("numen.brain.token_none", "未设置(仅本机回环)");
         adder.add("numen.brain.copy", "复制");
         adder.add("numen.brain.copy_prompt", "复制接入提示词");
-        adder.add("numen.brain.prompt_warn", "提示词含你的本机令牌,只发给你信任的 AI。");
+        adder.add("numen.brain.prompt_warn", "里面有你的本机令牌,只发给信任的 AI");
         adder.add("numen.brain.copied", "✔ 已复制");
-        adder.add("numen.brain.status_off", "服务器未运行");
-        adder.add("numen.brain.status_waiting", "等待客户端接入…");
-        adder.add("numen.brain.status_connected", "%s · %s活跃");
+        adder.add("numen.brain.status_waiting", "等待接入");
+        adder.add("numen.brain.status_connected", "%s · %s");
         adder.add("numen.brain.since_sec", "%d 秒前");
         adder.add("numen.brain.since_min", "%d 分钟前");
         adder.add("numen.brain.console_title", "外接大脑控制台");
         adder.add("numen.brain.console_empty", "在下面开口说话,或等外部 AI 动手——对话现场会出现在这里。");
         adder.add("numen.brain.quiet_standby", "外接大脑没动静了——她先安静待命。");
         adder.add("numen.brain.quiet_fallback", "外接大脑没动静了——内置大脑先接管,它回来就交还。");
+        adder.add("numen.brain.advanced", "高级设置");
         adder.add("numen.brain.back_active", "外接大脑回来了。");
-        adder.add("numen.brain.fallback_toggle", "失联后内置大脑接管");
+        adder.add("numen.brain.quiet_toggle", "%s 分钟无响应自动断开");
         adder.add("numen.brain.guide_title", "接入外部 AI");
         adder.add("numen.brain.guide_step",
                 "到「设置 → 外接大脑」复制接入提示词,粘贴给你的 AI,剩下的它会自己配好。");
-        adder.add("numen.brain.running", "运行中");
-        adder.add("numen.brain.stopped", "已停止");
-        adder.add("numen.brain.status", "连接状态");
-        adder.add("numen.brain.settings", "设置");
-        adder.add("numen.brain.settings_title", "外接大脑 · 设置");
-        adder.add("numen.brain.back", "返回");
         adder.add("numen.brain.regenerate", "重新生成");
         adder.add("numen.brain.regen_confirm_title", "换一个新令牌?");
         adder.add("numen.brain.regen_confirm_body",
@@ -616,16 +795,14 @@ public final class ModLanguageData {
         adder.add("numen.brain.lan_needs_token", "对局域网开放时必须有令牌。");
         adder.add("numen.brain.port", "端口");
         adder.add("numen.brain.timeout", "调用超时(秒)");
-        adder.add("numen.brain.hidden_tools", "不暴露给外部的工具");
+        adder.add("numen.brain.hidden_tools", "不暴露的工具");
         adder.add("numen.brain.hidden_hint", "逗号分隔");
         adder.add("numen.brain.save", "保存");
         adder.add("numen.brain.save_restart", "保存并重启服务");
         adder.add("numen.brain.saved", "✔ 已保存");
         adder.add("numen.brain.port_range", "端口必须在 1 到 65535 之间。");
         adder.add("numen.brain.port_taken", "端口 %d 已被占用。");
-        adder.add("numen.settings.theme.title", "主题");
         adder.add(Keys.STT_NAV, "语音输入");
-        adder.add(Keys.STT_TITLE, "语音输入 (STT)");
         adder.add(Keys.STT_MICROPHONE, "麦克风");
         adder.add(Keys.STT_MIC_DEFAULT, "（默认麦克风）");
         adder.add(Keys.STT_NOT_CONFIGURED, "未配置语音输入 —— 请在设置里填入 STT 的 API Key");
@@ -661,15 +838,14 @@ public final class ModLanguageData {
         adder.add("numen.chat.tip.mic_stop", "停止录音");
         adder.add("numen.chat.tip.stop", "停止当前回合");
         adder.add("numen.chat.hint", "对 %s 说…");
-        adder.add("numen.chat.no_key", "⚠ 未配置 API Key —— 打开设置添加");
         adder.add("numen.chat.empty", "对 %s 说点什么。");
         adder.add("numen.chat.compacting", "正在压缩历史…");
-        adder.add("numen.chat.compacted", "─── 更早的对话已压缩为摘要（原文保留在磁盘） ───");
-        adder.add("numen.chat.cleared", "─── 上下文已清除，她从头开始（聊天记录保留） ───");
-        adder.add("numen.chat.persona_changed", "─── 人设已切换 ───");
+        adder.add("numen.chat.compacted", "更早的对话已压缩为摘要（原文保留在磁盘）");
+        adder.add("numen.chat.cleared", "上下文已清除，她从头开始（聊天记录保留）");
+        adder.add("numen.chat.persona_changed", "人设已切换");
+        adder.add("numen.chat.halted", "已中断：%s");
         adder.add("numen.chat.steps", "%s 步");
-        adder.add("numen.chat.plan", "计划");
-        adder.add("numen.chat.no_plan", "暂无计划");
+        adder.add("numen.chat.plan", "计划 %s/%s");
         // 工具 chip 标签(约定键 numen.tool.<工具名>;未知/MCP 工具回落原名)。
         adder.add("numen.tool.build", "建造");
         adder.add("numen.tool.close_gui", "关闭界面");
@@ -714,7 +890,6 @@ public final class ModLanguageData {
         adder.add("numen.mcp.connecting", "%s · 连接中…");
         adder.add("numen.mcp.failed", "%s · 连接失败");
         adder.add("numen.mcp.disabled", "%s · 已停用");
-        adder.add("numen.skill.title", "技能");
         adder.add("numen.skill.empty", "无 · 放入 config/numen/skills");
         adder.add("numen.skill.open_dir", "＋ 目录");
         adder.add("numen.skill.no_desc", "(无描述)");
@@ -723,7 +898,7 @@ public final class ModLanguageData {
         adder.add("numen.dismiss.delete", "删除");
         adder.add("numen.dismiss.title", "删除同伴 \"%s\"？");
         adder.add("numen.dismiss.warning", "永久删除 · 背包会掉落在原地 · 无法撤销");
-        adder.add("numen.empty.no_companions", "还没有同伴。点 + 召唤一个。");
+        adder.add("numen.empty.no_companions", "还没有同伴");
         adder.add("numen.respawn", "· 复活中 %ss");
         adder.add("numen.status.loading", "加载中…");
         adder.add("numen.status.asleep", "休眠中 —— 对它说话唤醒。");
@@ -758,6 +933,33 @@ public final class ModLanguageData {
         adder.add(Keys.EDIT_DISMISS,          "遣散");
         adder.add(Keys.EDIT_PROVIDER_UNBOUND, "(未绑定)");
         adder.add(Keys.EDIT_MODE_LOCKED,      "没有作弊/OP 权限,改不了同伴的模式");
+        adder.add(Keys.CONVO_INVITE,           "邀请");
+        adder.add(Keys.CONVO_INVITE_TITLE,     "邀请同伴");
+        adder.add(Keys.CONVO_INVITE_CONFIRM,   "邀请");
+        adder.add(Keys.CONVO_RENAME,           "改名");
+        adder.add(Keys.CONVO_NAME_LABEL,       "名字");
+        adder.add(Keys.CONVO_DISSOLVE,         "解散");
+        adder.add(Keys.CONVO_DISSOLVE_TITLE,   "解散「%s」?");
+        adder.add(Keys.CONVO_DISSOLVE_WARNING, "说过的话留在各自的记录里,不会丢");
+        adder.add(Keys.CONVO_DROP,             "把 %s 移出这个会话");
+        adder.add(Keys.HEADER_ONLINE,          "在线");
+        adder.add(Keys.HEADER_TYPING,          "正在输入");
+        adder.add(Keys.HEADER_BUSY,            "正在忙");
+        adder.add(Keys.HEADER_COMPACTING,      "整理记忆");
+        adder.add(Keys.HEADER_MEMBERS,         "%s 位成员");
+        adder.add(Keys.HEADER_PROFILE,         "资料");
+        adder.add(Keys.HEADER_MORE,            "更多");
+        adder.add(Keys.MENU_PROFILE,           "查看资料");
+        adder.add(Keys.MENU_GROUP_INFO,        "查看群资料");
+        adder.add(Keys.CHAT_TODAY,             "今天");
+        adder.add(Keys.CHAT_YESTERDAY,         "昨天");
+        adder.add(Keys.CHAT_DATE_MD,           "%s月%s日");
+        adder.add(Keys.CHAT_DATE_YMD,          "%s年%s月%s日");
+        adder.add(Keys.RAIL_YOU,               "你");
+        adder.add(Keys.RAIL_EMPTY,             "还没说过话");
+        adder.add(Keys.RAIL_SEARCH,            "搜索");
+        adder.add(Keys.RAIL_DRAFT,             "草稿");
+        adder.add(Keys.RAIL_NO_MATCH,          "没有对得上的会话");
         adder.add(Keys.SKIN_TITLE,           "皮肤库");
         adder.add(Keys.SKIN_ADD,             "新建");
         adder.add(Keys.SKIN_EMPTY,           "还没有皮肤。点右上角\"新建\",再把皮肤 png 拖进游戏窗口。");
@@ -774,7 +976,51 @@ public final class ModLanguageData {
         adder.add(Keys.SKIN_SIGN_OK,         "「%s」签名成功");
         adder.add("numen.summon.mode",       "模式");
         adder.add("numen.bubble.thinking",   "✦ 正在思考");
+        adder.add("numen.bubble.asking",     "⌛ 等你点头");
         adder.add("numen.chat.reasoning",    "思考过程");
+        adder.add("numen.chat.reasoning_now", "思考中");
+        adder.add("numen.pin.goal", "目标");
+        adder.add("numen.pin.goal_meta", "第 %s 轮 · %s");
+        adder.add("numen.menu.copy", "复制文字");
+        adder.add("numen.menu.reply", "引用回复");
+        adder.add("numen.menu.pin", "置顶");
+        adder.add("numen.menu.unpin", "取消置顶");
+        adder.add("numen.menu.read", "标为已读");
+        adder.add("numen.menu.night", "夜间模式");
+        adder.add("numen.menu.day", "日间模式");
+        adder.add("numen.menu.clone", "克隆");
+        adder.add("numen.menu.use", "给她用");
+        adder.add("numen.menu.stop_using", "不再使用");
+        adder.add("numen.chat.reply_to", "回复 %s");
+        adder.add("numen.chat.unread_bar", "未读消息");
+        adder.add("numen.chat.find", "在对话里搜索");
+        adder.add("numen.chat.find_none", "没有结果");
+        adder.add("numen.profile.persona", "人设");
+        adder.add("numen.profile.persona_default", "默认人设");
+        adder.add("numen.profile.model", "模型");
+        adder.add("numen.profile.model_none", "未绑定");
+        adder.add("numen.profile.model_deleted", "条目已删除");
+        adder.add("numen.profile.voice", "声线");
+        adder.add("numen.profile.voice_none", "无");
+        adder.add("numen.profile.context", "上下文");
+        adder.add("numen.profile.context_value", "%s%% · %s 条");
+        adder.add("numen.profile.doing", "正在%s");
+        adder.add("numen.profile.bio", "简介");
+        adder.add("numen.profile.memories", "记忆");
+        adder.add("numen.profile.memories_none", "还没记下什么");
+        adder.add("numen.profile.memories_more", "还有 %s 条");
+        adder.add("numen.profile.note_meta", "第 %s 天 · %s");
+        adder.add("numen.profile.groups", "共同群聊");
+        adder.add("numen.profile.backpack", "背包 · %s 件");
+        adder.add("numen.profile.settings", "设置");
+        adder.add("numen.profile.distance", "距离");
+        adder.add("numen.profile.here", "就在身边");
+        adder.add("numen.profile.meters", "%s 米 %s");
+        adder.add("numen.profile.away", "不在附近");
+        adder.add("numen.profile.mode", "游戏模式");
+        adder.add("numen.profile.message", "发消息");
+        adder.add("numen.profile.creative", "创造");
+        adder.add("numen.profile.survival", "生存");
         adder.add("numen.summon.fetching_skin", "正在获取皮肤…");
         adder.add("numen.summon.persona_missing", "选的人设没找到(文件被删?),先用默认人格");
         adder.add("numen.summon.voice_missing", "选的声线没找到(条目被删?),她暂时不会出声");
@@ -876,5 +1122,61 @@ public final class ModLanguageData {
         adder.add(Keys.GUI_PROVIDERS_THINKING_OFF,      "关闭");
         adder.add(Keys.GUI_PROVIDERS_THINKING_ON,       "开启");
         adder.add(Keys.RESPAWN_BLOCKED,                 "· 周围太挤,等一个落脚点");
+        adder.add(Keys.CONSENT_ALLOW,          "允许");
+        adder.add(Keys.CONSENT_ALLOW_REMEMBER, "以后都允许");
+        adder.add(Keys.CONSENT_DENY,           "拒绝");
+        adder.add(Keys.CONSENT_NOTE_ROW,       "不行,告诉 %s 该怎么做…");
+        adder.add(Keys.CONSENT_ASKING,         "%s 请求你的同意,按 [%s] 答复");
+        adder.add(Keys.CONSENT_WITHDRAWN,      "%s 的请求撤回了:%s");
+        // 撤回的原因:服务端只说是哪一种(ConsentDesk.Withdrawal),主人的客户端按这里的文案显示
+        adder.add(com.dwinovo.numen.permission.ConsentDesk.Withdrawal.OWNER_ABSENT.key(), "没等到你的答复");
+        adder.add(com.dwinovo.numen.permission.ConsentDesk.Withdrawal.SUPERSEDED.key(), "她又问了新的一条");
+        adder.add(com.dwinovo.numen.permission.ConsentDesk.Withdrawal.UNNEEDED.key(), "不用再问你了");
+        adder.add(com.dwinovo.numen.permission.ConsentDesk.Withdrawal.TASK_ENDED.key(), "发起它的任务已经收场");
+        adder.add(com.dwinovo.numen.permission.ConsentDesk.Withdrawal.OWNER_STOPPED.key(), "你按了停止");
+        adder.add(com.dwinovo.numen.permission.ConsentDesk.Withdrawal.BODY_LEFT.key(), "她离开了世界");
+        adder.add(com.dwinovo.numen.permission.ConsentDesk.Withdrawal.DIED.key(), "她死了");
+        adder.add(Keys.CONSENT_DENY_NOTE,      "说一句再拒绝");
+        adder.add(Keys.CONSENT_CHOSE,          "你选了「%s」");
+        adder.add(Keys.CONSENT_DENIED_SAYING,  "你拒绝了:%s");
+        adder.add(Keys.CONSENT_ANSWERED_ELSEWHERE, "已在别处答复");
+        adder.add(Keys.CONSENT_ASK,            "想%s,可以吗?");
+        adder.add(Keys.CONSENT_ASK_MANY,       "想做这几件事,可以吗?");
+        adder.add(Keys.CONSENT_VERB_PREFIX + "break",      "挖");
+        adder.add(Keys.CONSENT_VERB_PREFIX + "place",      "放");
+        adder.add(Keys.CONSENT_VERB_PREFIX + "attack",     "打");
+        adder.add(Keys.CONSENT_VERB_PREFIX + "use_block",  "用");
+        adder.add(Keys.CONSENT_VERB_PREFIX + "use_entity", "用");
+        adder.add(Keys.CONSENT_VERB_PREFIX + "take",       "拿");
+        adder.add(Keys.CONSENT_VERB_PREFIX + "drop",       "丢");
+        adder.add(Keys.CONSENT_VERB_PREFIX + "command",    "执行");
+        adder.add(Keys.PERMISSION_SIGNAL_PREFIX + "placed",       "玩家放的");
+        adder.add(Keys.PERMISSION_SIGNAL_PREFIX + "block_entity", "功能方块");
+        adder.add(Keys.PERMISSION_SIGNAL_PREFIX + "contents",     "装着东西");
+        adder.add(Keys.PERMISSION_SIGNAL_PREFIX + "owned",        "有主人");
+        adder.add(Keys.PERMISSION_SIGNAL_PREFIX + "named",        "起了名字");
+        adder.add(Keys.PERMISSION_SIGNAL_PREFIX + "villager",     "村民");
+        adder.add(Keys.PERMISSION_SIGNAL_PREFIX + "hostile",      "敌对");
+        adder.add(Keys.PERMISSION_SIGNAL_PREFIX + "hazard_item",  "危险");
+        adder.add(Keys.PERMISSION_PLACED_BY,   "%s 放的");
+        adder.add(Keys.PERMISSION_UNCOVERED,   "没有规则");
+        adder.add(Keys.CONSENT_SECONDS,        "%s 秒");
+        adder.add(Keys.PERMISSION_SEPARATOR,   "、");
+        adder.add(Keys.PERMISSION_A_BLOCK,     "方块");
+        adder.add(Keys.FOLDER_ALL,   "全部");
+        adder.add(Keys.FOLDER_SOLO,  "私聊");
+        adder.add(Keys.FOLDER_GROUP, "群聊");
+        adder.add(Keys.FOLDER_EMPTY, "这个分组里还没有会话");
+        adder.add(Keys.FOLDER_NEW,            "新建分组");
+        adder.add(Keys.FOLDER_EDIT,           "编辑分组");
+        adder.add(Keys.FOLDER_DELETE,         "删除分组");
+        adder.add(Keys.FOLDER_DELETE_TITLE,   "删除分组「%s」?");
+        adder.add(Keys.FOLDER_DELETE_WARNING, "里面的会话不会被删除");
+        adder.add(Keys.FOLDER_ADD_TO,         "加入分组…");
+        adder.add(Keys.FOLDER_NAME,           "分组名");
+        adder.add(Keys.FOLDER_CHATS,          "包含的会话");
+        adder.add(Keys.SETTINGS_MESSAGE_NOTICES, "消息通知(没在看的会话里她说了话,右下角弹一张卡)");
+        adder.add(Keys.EDIT_COMPANION_TITLE,   "编辑同伴");
+        adder.add(Keys.CONVO_EDIT_TITLE,       "编辑会话");
     }
 }

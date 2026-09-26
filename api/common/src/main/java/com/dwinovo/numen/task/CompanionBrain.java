@@ -134,8 +134,8 @@ final class CompanionBrain {
 
         // 每刻结算:主人按停止会在带外把记录标成终态,而客户端串行的派发器会一直
         // 卡到那一个结果送出——不能等这个槽下次赢了才结算。
-        sync.settleIfTerminal();
-        current.settleIfTerminal();
+        sync.settleIfTerminal(companion);
+        current.settleIfTerminal(companion);
         // 手上的活干完了就把记录抹掉,免得重启后凭空捡回一件早就完成的活。
         if (current.isEmpty() && !wasIdle) {
             TaskPersistence.forget(companion);
@@ -218,8 +218,8 @@ final class CompanionBrain {
 
     /** 身体离开世界:两个槽就地结算(它们不会再被 tick),结果照送。 */
     void finalizeActive(NumenPlayer companion) {
-        sync.finalizeInline();
-        current.finalizeInline();
+        sync.finalizeInline(companion);
+        current.finalizeInline(companion);
         holder = null;
         // 同 tick():状态先归位再宣布结果 —— 结果一到就同步开轮,那一刻会读 <current_task>。
         syncCurrentTask(companion);
@@ -269,18 +269,30 @@ final class CompanionBrain {
         }
     }
 
+    /** 这次调用派下来的那件活:两个槽里在跑的,或者已经结算、还排着没送出去的;都没有是 null。 */
+    TaskRecord recordOf(String toolCallId) {
+        for (TaskRecord r : new TaskRecord[] {sync.record(), current.record()}) {
+            if (r != null && toolCallId.equals(r.getToolCallId())) {
+                return r;
+            }
+        }
+        for (TaskRecord r : outbox) {
+            if (toolCallId.equals(r.getToolCallId())) {
+                return r;
+            }
+        }
+        return null;
+    }
+
     /**
-     * 把结算好的记录送回主人。
+     * 把结算好的记录送出去。
      *
-     * <p>主人离线时<b>异步任务的收尾照发</b>——它走 {@link com.dwinovo.numen.event.NumenEvents},
-     * 自己会进出箱等主人回来。只有同步 tool_call 的结果没处送(那条调用属于一个
-     * 随客户端一起消失的回合),重登时由 {@code unansweredToolCallIds} 收口。
+     * <p>异步任务的收尾走 {@link com.dwinovo.numen.event.NumenEvents}:主人离线时<b>照发</b>,它自己会进出箱等主人
+     * 回来。同步动作的结果交回派它的那次调用自己的回信口({@link TaskDispatch#runSync} 绑在记录上):模型的调用由
+     * 网络入口回给发来它的主人客户端——主人已经下线时那条调用属于一个随客户端一起消失的回合,重登后发请求时由
+     * {@code ProtocolView} 给它补上失败结果;{@code /numen drive} 派的回给发令人。
      */
     private void shipResults(NumenPlayer companion) {
-        if (outbox.isEmpty()) {
-            return;
-        }
-        net.minecraft.server.level.ServerPlayer owner = companion.resolveOwnerPlayer();
         while (!outbox.isEmpty()) {
             TaskRecord rec = outbox.pollFirst();
             TaskResult result = rec.getResult();
@@ -301,15 +313,9 @@ final class CompanionBrain {
                         companion, rec.publicId(), rec.getToolName(), status, msg);
                 continue;
             }
-            if (owner == null) {
-                continue;
-            }
-            String json = result == null
+            rec.reply().accept(result == null
                     ? "{\"success\":false,\"message\":\"no result produced\"}"
-                    : result.toJson();
-            com.dwinovo.numen.platform.Services.NETWORK.sendToPlayer(owner,
-                    new com.dwinovo.numen.network.payload.TaskResultPayload(
-                            companion.getUUID(), rec.getToolCallId(), json));
+                    : result.toJson());
         }
     }
 }

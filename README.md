@@ -8,8 +8,8 @@
 
 [English](README_EN.md) · [**简体中文**](README.md)
 
-![Minecraft](https://img.shields.io/badge/Minecraft-1.20.1%20~%2026.1.2-62B47A?style=flat-square)
-![Loaders](https://img.shields.io/badge/Loaders-Fabric%20%7C%20Forge%20%7C%20NeoForge-DE7C36?style=flat-square)
+![Minecraft](https://img.shields.io/badge/Minecraft-1.20.1%20~%2026.2-62B47A?style=flat-square)
+![Loaders](https://img.shields.io/badge/Loaders-Fabric%20%7C%20NeoForge%20%7C%20Forge%20%E2%89%A41.20.4-DE7C36?style=flat-square)
 ![Java](https://img.shields.io/badge/Java-17%20%7C%2021%20%7C%2025-007396?style=flat-square&logo=openjdk&logoColor=white)
 ![License](https://img.shields.io/badge/code-LGPL--3.0-A8731E?style=flat-square)
 
@@ -27,6 +27,8 @@ Numen 在你的世界里放一个 AI 同伴。你用自然语言把要做的事�
 
 它不是个会聊天的 NPC。它是服务端的一个真玩家，挖矿、走路、挥剑、开箱子，每个动作都走原生玩家代码路径，和红石、怪物 AI、别人的 mod 站在同一套规则里。
 
+它还能变强。写一篇 Markdown 教它新玩法，写一个插件把机械动力、AE2 接进来。[这两样社区都能写](#扩展它)。
+
 ```
 你：    挖一组铁矿回来
 Numen： 这就去。下矿找铁。
@@ -35,6 +37,8 @@ Numen： 拿到 64 个粗铁——要我熔了吗？
 ```
 
 ## 快速开始
+
+本 fork 的 `port/1.20.1-latest` 分支需要 **Java 21**，Forge 构建对齐 **47.4.16**，移植了上游 `1.21.1` 至 `427da892` 的更新。Fabric / Forge 构建和 1,407 项单元测试已通过；Forge 游戏内测试通过 238 / 240 项，尚有无垫脚方块登高及自身载具交互后破块的失败用例。Create：Delight Remake 实机验证尚未完成，请先使用独立测试实例。
 
 1. **安装** mod（Fabric 端另需 [Fabric API](https://modrinth.com/mod/fabric-api)），启动一次。
 2. **填入 API key。** 按 **`G`** → **设置** → **模型**，选一家，粘贴你自己的 key。
@@ -67,7 +71,7 @@ Numen： 拿到 64 个粗铁——要我熔了吗？
 近三十个工具，拼成它此刻的双手与双眼：
 
 - ⛏️ **干活**——挖矿、伐木、采集、建造、精确放置与破坏、照配方合成、用熔炉熔炼、把战利品分门别类塞进箱子。
-- 🧭 **走位**——服务端寻路引擎：会跳、游、爬、开门、跑酷、驾船，也会搭桥、垫脚、搭柱、挖隧道、下挖楼梯。走路默认**不改世界**——墙、地板、别人的房子、地貌原样不动；唯一的路要挖要垫时，它会把会动的方块一块块列给模型，模型点头（`may_alter_terrain`）才开路，每次回执都如实写明路上挖了什么、放了什么。
+- 🧭 **走位**——服务端寻路引擎：会跳、游、爬、开门、跑酷、驾船，也会搭桥、垫脚、搭柱、挖隧道、下挖楼梯。走路默认**不改世界**——墙、地板、别人的房子、地貌原样不动；没有干净的路时，它会列出几条带价签的候选路线（各要挖什么、放什么），模型选一条（`goto route:<id>`）或换目的地才开路；`plan_route` 只算不走，每次回执都如实写明路上挖了什么、放了什么。
 - ⚔️ **战斗**——原生玩家近战与弓箭，真冷却、真暴击；受伤会自己吃东西，快淹死会自己游上岸。
 - 🔭 **感知**——扫方块、扫实体、查状态、查配方、定位结构与群系，不开 GUI 就读出一台机器里装了什么。
 - 🗣️ **说话**——语音进语音出，也能给它设人格、换皮肤、挑音色。
@@ -75,17 +79,17 @@ Numen： 拿到 64 个粗铁——要我熔了吗？
 
 ## 扩展它
 
-同伴能玩到多深，取决于三件事，而这三件事的难度完全不同。
+同伴是个真玩家，所以模组的方块它能挖能放，模组的容器它能开能拿，机器只要暴露了标准 capability，它不开界面也能读出里面装着什么。这层装上就有，不用为谁单独适配。
 
-**能不能碰——已经是通用的。** 同伴是真玩家，所以模组的方块它能挖能放能右键，模组的容器它能开能拿能塞，暴露了标准 capability 的机器它能隔着外壳读出里面的物品、流体和能量。这一层不需要为任何模组单独写适配，装上就有。
+它不知道的是玩法。AE2 的通道要算，机械动力应力超了整条线会停，有些东西得先升到某一阶才有意义。这些读不出来，只能教。
 
-**知不知道是什么——大半是现成的。** 配方、标签、物品名都是会同步到客户端的数据，模组也在这套体系里。"这台机器吃什么、吐什么"，对相当一部分模组来说本来就是可读的。
+有两种教法，社区都能写。
 
-**知不知道怎么玩——这层只能靠人。** AE2 的通道要算、Create 的应力超了整条线会停、有些东西得先升级到某一阶才有意义——这类知识不在任何数据结构里，读不出来，只能写下来教给它。这就是 **Skill**：`config/numen/skills/` 下的 Markdown 工作流，相关时才加载、让提示词保持精简。零代码，人人能写。内置了一套示例（下界、烈焰棒、末影珍珠、要塞、龙战），改一篇或者自己写一篇，就能把你基地的规矩、或者一个新模组的玩法教给它。
+**技能**是一篇 Markdown。把你基地的规矩、或者某个模组的流程写下来，丢进 `config/numen/skills/` 就生效。零代码。出厂带了五篇示例：下界、烈焰棒、末影珍珠、要塞、龙战。照着改一篇最快。
 
-光靠文字说不清的，可以直接给它加工具：mod 作者用 `NumenGateway` 注册一个工具，或者在设置的 **MCP** 一页挂上任意 Model Context Protocol 服务器（stdio 或 HTTP，带 OAuth），两种方式接进来的工具都跟内置工具一视同仁。工具是给它一把锤子，Skill 是教它怎么抡这把锤子。
+**插件**是一个 mod，把别的模组接进来。装上机械动力的插件，同伴就会用机械动力；装上 AE2 的，它就懂 AE2。插件能做两件事：用 `NumenGateway` 注册工具（比如「读一下这台机器里有什么」），以及把技能装在自己 jar 里一起发。玩家装上你的插件，工具和玩法一起到手。写法见[给开发者](#给开发者)。
 
-前两层是一次性工程，第三层会一直长——这需要社区一起写。我们不打算假装有一天能把它写完。
+> 设置里的 **MCP** 那一页可以挂外部 Model Context Protocol 服务器，里面的工具跟内置的一视同仁。那是给你自己接现成服务用的。适配一个模组不能等它出 MCP 服务器，那得写插件。
 
 ## 外接大脑
 
@@ -118,26 +122,28 @@ Numen： 拿到 64 个粗铁——要我熔了吗？
 
 ## 给开发者
 
-Numen 出厂的每一个工具、每一篇技能，全部只用公共 API 写成，没有任何私有通道。任何 mod 作者都拿得到同一份能力：
+Numen 出厂的每一个工具、每一篇技能，全部只用公共 API 写成，没有任何私有通道。**写[插件](#扩展它)拿到的是同一份能力**：
 
-- 🔧 **通过 `NumenGateway` 注册一个工具**，你 mod 的能力就长在了 AI 的手上。工具契约里刻意不含任何 Minecraft 概念——怎么完成调用（同步、异步、自己发包、调外部网络服务）完全由工具自己做主。正因如此，同一套 API 伸向一个聊天平台，和伸向一条矿脉一样顺手。
-- 📖 **随 jar 附带技能**——一句调用就把你 jar 里的 `/skills` 目录变成内置技能，玩家装上你的 mod，AI 自动学会怎么玩它。
-- 🏗️ **或者造一个完全不同的 AI**——同一块地基上，AI NPC、剧情角色、服务器管家，随你想象。
+- 🔧 **`NumenGateway` 注册工具**——你 mod 的能力就长在了 AI 的手上。工具契约里刻意不含任何 Minecraft 概念，怎么完成调用（同步、异步、自己发包、调外部网络服务）由工具自己做主。正因如此，同一套 API 伸向一个聊天平台，和伸向一条矿脉一样顺手。
+- 📖 **随 jar 附带技能**——一句调用就把你 jar 里的 `/skills` 目录变成内置技能。
+- 🏗️ **或者造一个完全不同的 AI**——同一块地基上，AI NPC、剧情角色、服务器管家，随你想象。这时候依赖的是 core 而不只是引擎。
 
 引擎（`api/`）住在本仓库的 `api/` 目录里，对第三方仍作为独立坐标发布：
 
 ```gradle
 repositories { maven { url = 'https://raw.githubusercontent.com/Dwinovo/numen-maven/main' } }
-dependencies  { modImplementation "com.dwinovo.numen:numen-api-fabric-1.20.1:<version>" }
+dependencies  { modCompileOnly "com.dwinovo.numen:numen-api-fabric-1.20.1:<version>:api" }
 ```
 
-面向集成的公共对接 API 采用 **MIT** 授权——写工具、写技能、写兼容，不必被 LGPL 牵着走。
+加载器不同写法不同，要改引擎机制则改依赖 core——详见 [api/README](api/README.md#如何依赖)。
 
-自己构建：克隆仓库，`./gradlew :core:fabric:build`（或 `:core:neoforge:build`）。Bug、点子、兼容实验都欢迎——[开个 issue](https://github.com/Dwinovo/minecraft-numen/issues)，或者写一篇技能提 PR。
+插件和兼容模组可以采用任何协议，包括闭源：单独发布、通过 API 使用 Numen 的作品不受 LGPL 约束。
+
+自己构建：克隆仓库，`./gradlew :core:fabric:build`（或 `:core:forge:build`）。Bug、点子、兼容实验都欢迎——[开个 issue](https://github.com/Dwinovo/minecraft-numen/issues)，或者写一篇技能提 PR。
 
 ## 路线图
 
-- **为大模组做适配。** Create、AE2、Mekanism 这些自成宇宙的科技 mod，得一个个真去适配——注册工具、写技能、接 MCP，哪种合适用哪种。模组生态太大，指望单一机制打通不现实。`inspect_block_storage` 那一眼透视是第一块砖。
+- **为大模组做适配。** Create、AE2、Mekanism 这些自成宇宙的科技 mod，得一个个真去适配——[插件 + 技能](#扩展它)，一个模组一套工作流。`inspect_block_storage` 那一眼透视是第一块砖。
 - **长成一座技能库。** 让"教 AI 玩一个新模组"简单到只需写一篇 Markdown，社区共建共享。
 - **越玩越像个老玩家。** 更深的世界记忆与长程规划。
 
@@ -147,10 +153,10 @@ dependencies  { modImplementation "com.dwinovo.numen:numen-api-fabric-1.20.1:<ve
 
 <sub>想自己构建、看完整工具清单或架构设计？都在源码里——从 <code>core/common/src/main/java/com/dwinovo/numen/</code> 看起。</sub>
 
-<sub><b>授权</b>：源代码采用 <a href="LICENSE">LGPL-3.0</a>——你分发的修改版必须以同协议继续开源。面向兼容模块 / MCP 桥接的<b>公共对接 API</b>采用 <a href="LICENSE-API">MIT</a>，让任何人都能自由地写 mod 兼容。美术与资源为 <a href="LICENSE-ASSETS">保留所有权利</a>，"Numen" / "言出法随" 名称亦予保留。基于 <a href="https://github.com/jaredlll08/MultiLoader-Template">MultiLoader Template</a> 构建。</sub>
+<sub><b>授权</b>：源代码采用 <a href="LICENSE">LGPL-3.0</a>——你分发的修改版必须以同协议继续开源；单独发布、通过 API 使用 Numen 的插件与兼容模组可以采用任何协议，包括闭源。美术与资源为 <a href="LICENSE-ASSETS">保留所有权利</a>，"Numen" / "言出法随" 名称亦予保留。基于 <a href="https://github.com/jaredlll08/MultiLoader-Template">MultiLoader Template</a> 构建。</sub>
 
-<sub>寻路的<b>规划层</b>基于启发式搜索文献实现：加权 A* 与预算化的部分路径提交（搜索超时时按多档启发系数提交当前最优部分路径），附独立于游戏的单元测试。<b>路径跟随层</b>沿计划路径逐移动原语推进：窗口化的回退/前跳重定位、无缝段拼接与超长裁剪、执行期成本复核与脱轨看门狗，外加一组疾跑决策启发。<b>执行层</b>与 <a href="https://github.com/cabaletta/baritone">Baritone</a> 的根本区别在于运行位置：Baritone 是纯客户端模组、操控本机玩家；Numen 驱动的是<b>服务端假玩家</b>，移动/挖掘/放置全部经服务端 API 实现——设计思路上借鉴了其公开机制，<b>未复制、移植或改写其任何源码</b>。本项目代码采用 LGPL-3.0 属自主选择，与 Baritone（同为 LGPL-3.0）无衍生关系。</sub>
+<sub>寻路借鉴了 <a href="https://github.com/cabaletta/baritone">Baritone</a> 的公开机制（加权 A*、部分路径提交、执行期成本复核），但 Baritone 是客户端模组、操控本机玩家，Numen 驱动的是服务端假玩家，移动/挖掘/放置全走服务端 API。<b>未复制、移植或改写其任何源码</b>；LGPL-3.0 是自主选择，与其无衍生关系。</sub>
 
-<sub>喂给大模型的<b>空间感知表征</b>采用「自我中心的语义字符网格」而非裸坐标列表：把玩家周围的体素离散化、语义 pooling 成以自身为中心的字符矩阵。该表征形式的有效性依据 Gao 等，<i>Exploring Spatial Representation to Enhance LLM Reasoning in Aerial Vision-Language Navigation</i>（arXiv:2410.08500, 2024）——其消融实验表明，同为文本输入时，语义-拓扑-度量的网格矩阵显著优于拓扑图与方向距离描述，亦远优于直接输入图像。Numen 取其「egocentric + 离散化 + 语义 pooling」的格式原则，并针对方块世界的竖直性做三维适配（分层切片 / 高度信息）。</sub>
+<sub>喂给大模型的空间感知用「自我中心的语义字符网格」而不是坐标列表，格式原则取自 Gao 等，<i>Exploring Spatial Representation to Enhance LLM Reasoning in Aerial Vision-Language Navigation</i>（arXiv:2410.08500, 2024），并针对方块世界做了三维适配。</sub>
 
 </div>

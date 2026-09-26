@@ -2,7 +2,8 @@ package com.dwinovo.numen.core.task.move;
 
 import com.dwinovo.numen.core.pathing.calc.NavGoal;
 import com.dwinovo.numen.core.pathing.execute.PlayerNav;
-import com.dwinovo.numen.core.pathing.moves.MovementHelper;
+import com.dwinovo.numen.core.pathing.spec.CellClass;
+import com.dwinovo.numen.core.pathing.spec.RouteSpec;
 import com.dwinovo.numen.core.task.base.AbstractCompanionTask;
 import com.dwinovo.numen.entity.NumenPlayer;
 import com.dwinovo.numen.task.TaskState;
@@ -25,11 +26,11 @@ import net.minecraft.world.level.Level;
  * 同一个道理——<b>休眠不是失败</b>,不发结果、不腾槽、不惊动模型。
  *
  * <h2>够不着就报出去</h2>
- * 跟着走默认不动世界(见 {@code TerrainPermit}),于是"没有路"多半不是暂时的:隔着断崖、
- * 在屋里、差几格高——退避多少次都一样。那就以失败收场,把原因连同要动的方块清单交给
- * 模型,它决定带 {@code may_alter_terrain} 重发、换个办法、或者告诉主人。一个明确的失败
- * 原因不能攥在手里站着空算。主人飞在半空时跟的是他脚下的地面({@link #anchor}),
- * 一般够得着;真够不着也照样报。
+ * 跟着走从不动世界(路线规格 alter=NONE,没有开关),于是"没有路"多半不是暂时的:隔着断崖、
+ * 在屋里、差几格高——退避多少次都一样。那就以失败收场,把原因连同候选路线清单交给
+ * 模型,它决定先 goto 一条开路、换个办法、或者告诉主人。一个明确的失败原因不能攥在手里
+ * 站着空算。主人飞在半空时跟的是他脚下的地面({@link #anchor}),一般够得着;真够不着
+ * 也照样报。
  *
  * <h2>目标没了,主人和别人不一样</h2>
  * <b>主人下线是暂时的</b>——他会回来,所以休眠等着,这也是常驻该有的样子。而点名跟的
@@ -88,11 +89,10 @@ public final class FollowCompanionTask extends AbstractCompanionTask<FollowTaskR
             return TaskState.FAILED;
         }
         if (nav == null) {
-            // 目标每次重规划时现取,所以主人边走她也跟得上。地形许可按记录来,默认只走不改;
-            // 探针开着——跟不上的时候回执里要有"会动哪些方块"的清单
-            nav = PlayerNav.toGoal(player, this::goal, WALK_SPEED, this::closeEnough,
-                    r.mayAlterTerrain ? PlayerNav.ContextProvider.TERRAFORM
-                            : PlayerNav.ContextProvider.DEFAULT).withTerrainProbe();
+            // 目标每次重规划时现取,所以主人边走她也跟得上。只走不改;探针开着——跟不上的
+            // 时候回执里要有候选路线的清单
+            nav = PlayerNav.toGoal(player, this::goal, WALK_SPEED, this::closeEnough, TERRAIN)
+                    .withTerrainProbe();
         }
         moving = true;
         switch (nav.tick()) {
@@ -143,6 +143,9 @@ public final class FollowCompanionTask extends AbstractCompanionTask<FollowTaskR
         return NavGoal.nearGround(at, r.keepWithin);
     }
 
+    /** 跟随的路线规格:只走不改,没有开关。 */
+    private static final PlayerNav.ContextProvider TERRAIN = PlayerNav.ContextProvider.DEFAULT;
+
     /**
      * 目标悬空(飞行/跳跃/坐船/本来就会飞)时跟到它<b>脚下的地面</b>。
      *
@@ -159,12 +162,13 @@ public final class FollowCompanionTask extends AbstractCompanionTask<FollowTaskR
             return at;
         }
         Level level = player.level();
+        RouteSpec spec = TERRAIN.spec();
         BlockPos p = at;
         for (int i = 0; i < GROUND_SCAN; i++) {
-            if (MovementHelper.canWalkOn(level, p.below())) {
+            if (CellClass.canWalkOn(level, p.below(), spec)) {
                 return p;                        // 站得住,就是这儿
             }
-            if (!MovementHelper.canWalkThrough(level, p.below())) {
+            if (!CellClass.canWalkThrough(level, p.below(), spec)) {
                 return p;                        // 下面是穿不过又站不住的东西,不再往下
             }
             p = p.below();

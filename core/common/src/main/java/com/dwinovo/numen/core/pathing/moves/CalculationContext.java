@@ -1,13 +1,15 @@
 package com.dwinovo.numen.core.pathing.moves;
 
-import com.dwinovo.numen.core.pathing.settings.ScaffoldMaterials;
 import java.util.List;
 
 import com.dwinovo.numen.core.pathing.settings.NavSettings;
-import com.dwinovo.numen.core.pathing.util.BlockHelper;
+import com.dwinovo.numen.core.pathing.settings.ScaffoldMaterials;
+import com.dwinovo.numen.core.pathing.spec.CellClass;
+import com.dwinovo.numen.core.pathing.spec.RouteSpec;
+import com.dwinovo.numen.permission.Action;
+import com.dwinovo.numen.permission.Gate;
+import com.dwinovo.numen.permission.Verdict;
 
-import it.unimi.dsi.fastutil.longs.LongSet;
-import it.unimi.dsi.fastutil.longs.LongSets;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.EquipmentSlot;
@@ -30,9 +32,10 @@ import static com.dwinovo.numen.core.pathing.moves.ActionCosts.COST_INF;
  * 因中途改设置得到自相矛盾的路径。
  *
  * <p>世界读取走注入的 {@link BlockGetter} 视图 + {@link ChunkLoadedTest}
- * 谓词;三个语义开关:{@code permit}(这次移动能不能改地形,见
- * {@link TerrainPermit})、{@code sacred}(自身目标格,不可挖不可埋,
- * 不可穿透)、{@code deniedPlace}(执行层证明放不上的格)。
+ * 谓词;这次导航能做什么、每样多贵由 {@link RouteSpec} 说了算(能不能改地形、
+ * 哪些格禁挖禁放、各项罚金),本类只把它与服主总开关、背包、附魔折成结论。
+ * 这一格能不能挖、能不能放,只问权限层的 {@link Gate}——它是主线程取的快照,
+ * 工作线程只读。
  */
 public class CalculationContext {
 
@@ -55,42 +58,35 @@ public class CalculationContext {
     /** 快捷栏有水桶且不在下界。 */
     public final boolean hasWaterBucket;
     public final boolean canSprint;
-    /** 放置一格的成本;经 {@link #costOfPlacingAt} 取用,勿直接读。 */
-    protected final double placeBlockCost;
     public final boolean allowBreak;
     public final List<Block> allowBreakAnyway;
-    public final boolean allowParkour;
-    public final boolean allowParkourPlace;
     public final boolean allowJumpAtBuildLimit;
-    public final boolean allowParkourAscend;
-    public final boolean assumeWalkOnWater;
-    /** 恒 false,占位保留(落岩浆永不可接受)。 */
-    public final boolean allowFallIntoLava;
     /** 装备的霜行者附魔等级,0 为无。 */
     public final int frostWalker;
-    public final boolean allowDiagonalDescend;
-    public final boolean allowDiagonalAscend;
-    public final boolean allowDownward;
     /** 坠落类移动的最小坠落高度。 */
     public int minFallHeight;
-    public int maxFallHeightNoWater;
+    /** 无水可接受的最大坠落高度:规格给下限,摔不死的高度按当前血量放宽。 */
+    public final int maxFallHeightNoWater;
     public final int maxFallHeightBucket;
     public final double fallDamageCostPerPoint;
     /** 水中行走单格成本(水下速附魔按系数折向平走速度)。 */
     public final double waterWalkSpeed;
-    public final double breakBlockAdditionalCost;
     public double backtrackCostFavoringCoefficient;
-    public double jumpPenalty;
-    public final double walkOnWaterOnePenalty;
     public final boolean allowPlaceInFluidsSource;
     public final boolean allowPlaceInFluidsFlow;
+    public final boolean avoidUpdatingFallingBlocks;
 
-    /** 这次移动对地形的许可;{@link #allowBreak}/{@link #hasThrowaway} 已把它折进去。 */
-    public final TerrainPermit permit;
-    /** 不可挖不可埋的自身目标格(BlockPos.asLong 键),不可穿透。 */
-    public final LongSet sacred;
-    /** 执行层证明无支撑放不上的格:放置成本直接 INF。 */
-    public final LongSet deniedPlace;
+    /** 这次导航的路线规格;{@link #allowBreak}/{@link #hasThrowaway}/{@link #canSprint} 已把它与总开关折在一起。 */
+    public final RouteSpec spec;
+
+    /** 权限层的裁决快照:挖某格、放某格先问它。 */
+    public final Gate gate;
+
+    /**
+     * 需要主人同意的格子在 {@link RouteSpec.Alter#ANY} 下的代价乘数。要有限,ANY 才搜得到
+     * 穿过它的路;要贵到任何长度相当的自然路线都胜出——十倍于自然挖掘,约等于绕行几十格。
+     */
+    public static final double CONSENT_COST_MULTIPLIER = 10.0;
 
     /** 世界可建高度下界(含)与上界(不含)。 */
     public final int worldBottom;
@@ -102,67 +98,47 @@ public class CalculationContext {
      */
     public final WorldBorder worldBorder;
 
-    /** 便捷构造:无目标格/禁放格开关,只带许可。 */
     public CalculationContext(ServerPlayer player, BlockGetter view, ChunkLoadedTest loadedTest,
-                              boolean safeForThreadedUse, TerrainPermit permit) {
-        this(player, view, loadedTest, safeForThreadedUse,
-                LongSets.emptySet(), LongSets.emptySet(), permit);
-    }
-
-    public CalculationContext(ServerPlayer player, BlockGetter view, ChunkLoadedTest loadedTest,
-                              boolean safeForThreadedUse,
-                              LongSet sacred, LongSet deniedPlace, TerrainPermit permit) {
+                              boolean safeForThreadedUse, RouteSpec spec, Gate gate) {
         NavSettings settings = NavSettings.get();
         this.safeForThreadedUse = safeForThreadedUse;
         this.player = player;
         this.view = view;
         this.loadedTest = loadedTest;
-        this.permit = permit;
-        this.sacred = sacred;
-        this.deniedPlace = deniedPlace;
+        this.spec = spec;
+        this.gate = gate;
         this.toolSet = new ToolSet(player);
         // 免耗材画像(创造)恒有耗材:执行层选料时会自动补一组(伸手进创造
         // 物品栏的代码版),规划器因此敢想所有需要垫方块的路线——不然空手
         // 创造同伴会挖坑出不来(离目标 2 格报 NO-PATH)。
-        // 许可与总开关同折:PRESERVE 下没有耗材这回事,放置成本处处 INF
-        this.hasThrowaway = permit.mayAlter() && settings.allowPlace
+        // 规格与总开关同折:不改地形的路线没有耗材这回事,放置成本处处 INF
+        this.hasThrowaway = spec.alter().mayAlter() && settings.allowPlace
                 && (hasGenericThrowaway(player, settings)
                         || com.dwinovo.numen.core.WorkProfile.of(player).freeMaterials());
         this.hasWaterBucket = settings.allowWaterBucketFall
                 && hotbarHasWaterBucket(player)
                 && player.level().dimension() != Level.NETHER;
         // 无饥饿画像(创造)不受饱食度门限——否则 food≤6 时被切创造会永久锁死疾跑
-        this.canSprint = settings.allowSprint
+        this.canSprint = spec.sprint() && settings.allowSprint
                 && (!com.dwinovo.numen.core.WorkProfile.of(player).hasHunger()
                         || player.getFoodData().getFoodLevel() > 6);
-        this.placeBlockCost = settings.blockPlacementPenalty;
-        this.allowBreak = permit.mayAlter() && settings.allowBreak;
+        this.allowBreak = spec.alter().mayAlter() && settings.allowBreak;
         this.allowBreakAnyway = List.copyOf(settings.allowBreakAnyway());
-        this.allowParkour = settings.allowParkour;
-        this.allowParkourPlace = settings.allowParkourPlace;
         this.allowJumpAtBuildLimit = settings.allowJumpAtBuildLimit;
-        this.allowParkourAscend = settings.allowParkourAscend;
-        this.assumeWalkOnWater = settings.assumeWalkOnWater;
-        this.allowFallIntoLava = false;
         this.frostWalker = equipmentEnchantLevel(player);
-        this.allowDiagonalDescend = settings.allowDiagonalDescend;
-        this.allowDiagonalAscend = settings.allowDiagonalAscend;
-        this.allowDownward = settings.allowDownward;
         this.minFallHeight = 3;
         // 落差上限不写死:摔不死的高度都可以是路,只是疼。原版摔伤 = 高度-3(半心/格),
-        // 按当前血量留 3 颗心(6 点)保命余量反推可承受高度;设置值兜底为下限。
+        // 按当前血量留 3 颗心(6 点)保命余量反推可承受高度;规格值为下限。
         int survivableFall = 3 + Math.max(0, (int) ((player.getHealth() - 6.0f) / 1.0f));
         this.maxFallHeightNoWater = Math.min(12,
-                Math.max(settings.maxFallHeightNoWater, survivableFall));
+                Math.max(spec.maxFallHeightNoWater(), survivableFall));
         this.maxFallHeightBucket = settings.maxFallHeightBucket;
         this.fallDamageCostPerPoint = settings.fallDamageCostPerPoint;
         this.waterWalkSpeed = computeWaterWalkSpeed(player);
-        this.breakBlockAdditionalCost = settings.blockBreakAdditionalPenalty;
         this.backtrackCostFavoringCoefficient = settings.backtrackCostFavoringCoefficient;
-        this.jumpPenalty = settings.jumpPenalty;
-        this.walkOnWaterOnePenalty = settings.walkOnWaterOnePenalty;
         this.allowPlaceInFluidsSource = settings.allowPlaceInFluidsSource;
         this.allowPlaceInFluidsFlow = settings.allowPlaceInFluidsFlow;
+        this.avoidUpdatingFallingBlocks = settings.avoidUpdatingFallingBlocks;
         this.worldBottom = view.getMinBuildHeight();
         this.worldHeight = view.getMaxBuildHeight();
         WorldBorder border = null;
@@ -264,19 +240,44 @@ public class CalculationContext {
         return loadedTest.isLoaded(x, z);
     }
 
+    // ==================== 格子判定(本视图 + 本规格) ====================
+
+    public boolean canWalkThrough(int x, int y, int z) {
+        return canWalkThrough(x, y, z, get(x, y, z));
+    }
+
+    public boolean canWalkThrough(int x, int y, int z, BlockState state) {
+        return CellClass.canWalkThrough(view, loadedTest, x, y, z, state, spec);
+    }
+
+    public boolean canWalkOn(int x, int y, int z) {
+        return canWalkOn(x, y, z, get(x, y, z));
+    }
+
+    public boolean canWalkOn(int x, int y, int z, BlockState state) {
+        return CellClass.canWalkOn(view, loadedTest, x, y, z, state, spec);
+    }
+
     // ==================== 成本函数 ====================
 
     /**
-     * 在 (x,y,z) 放一个方块的成本。无耗材、sacred/denied 命中、
-     * 贴着世界边界(边界格无法右键贴放)、流体规则不许 → INF;
-     * 否则放置罚金。
+     * 在 (x,y,z) 放一个方块的成本。无耗材、规格按位置或按种类禁放、权限层不许、贴着世界边界
+     * (边界格无法右键贴放)、流体规则不许 → INF;否则放置罚金加该格的位置代价,需要主人同意
+     * 的格(只有 {@link RouteSpec.Alter#ANY} 走得到)再乘 {@link #CONSENT_COST_MULTIPLIER}。
      */
     public double costOfPlacingAt(int x, int y, int z, BlockState current) {
-        if (!hasThrowaway) { // 构造时已含许可与 allowPlace 判定
+        if (!hasThrowaway) { // 构造时已含规格与 allowPlace 判定
             return COST_INF;
         }
-        long key = BlockPos.asLong(x, y, z);
-        if (sacred.contains(key) || deniedPlace.contains(key)) {
+        double positional = spec.positions().place(BlockPos.asLong(x, y, z));
+        if (positional >= COST_INF) {
+            return COST_INF;
+        }
+        if (spec.bans().placingInto().contains(current.getBlock())) {
+            return COST_INF;
+        }
+        double permitted = permissionMultiplier(Action.place(new BlockPos(x, y, z), current, null));
+        if (permitted >= COST_INF) {
             return COST_INF;
         }
         if (!MovementHelper.placeableWithinBorder(worldBorder, x, z)) {
@@ -289,29 +290,31 @@ public class CalculationContext {
                 && !current.getFluidState().isSource()) {
             return COST_INF;
         }
-        return placeBlockCost;
+        return spec.placeCost() * permitted + positional;
     }
 
-    /** 挖掘保护判定的专用游标(与 {@link #cursor} 分开,免得互相踩)。 */
-    private final BlockPos.MutableBlockPos protectionCursor = new BlockPos.MutableBlockPos();
-
     /**
-     * 挖 (x,y,z) 的成本乘数。两层禁令,从严到宽:
-     * <ol>
-     *   <li>sacred(自身目标格)永远 INF,任何开关都不可穿透;</li>
-     *   <li>do_not_break 标签成员(默认设施类:床/门/活板门/栅栏门,
-     *       数据包可追加)直接 INF,任何开关都不可解除;</li>
-     *   <li>许可为 PRESERVE、或总开关 {@code allowBreak} 关闭,且不在例外清单 → INF。</li>
-     * </ol>
-     * 功能方块(工作台/熔炉/箱子等)的 ×10 软惩罚由 {@link ToolSet}
-     * 的 {@code avoidanceMultiplier}(NavSettings.blocksToAvoidBreaking)
-     * 在 {@code getStrVsBlock} 里实现,此处不参与。
+     * 挖 (x,y,z) 的成本乘数:这次导航的规格允不允许({@link #terrainBreakMultiplierAt}),再乘权限层的
+     * 定价({@link #permissionMultiplier}:放行 1;需要主人同意在 {@link RouteSpec.Alter#ANY} 下有限价、
+     * 否则 INF;拒绝 INF)。
      */
     public double breakCostMultiplierAt(int x, int y, int z, BlockState current) {
-        if (sacred.contains(BlockPos.asLong(x, y, z))) {
+        if (terrainBreakMultiplierAt(x, y, z, current) >= COST_INF) {
             return COST_INF;
         }
-        if (BlockHelper.shouldAvoidBreaking(view, protectionCursor.set(x, y, z))) {
+        return permissionMultiplier(Action.breakBlock(new BlockPos(x, y, z), current));
+    }
+
+    /**
+     * 挖 (x,y,z) 在这次导航的规格与服主总开关之下做不做得到,不问权限层:规格按位置禁挖(导航自身
+     * 目标格、工地格)、按种类禁挖(模型点名的方块)、规格不改地形或总开关 {@code allowBreak} 关闭
+     * 且不在例外清单 → INF;否则 1。
+     */
+    public double terrainBreakMultiplierAt(int x, int y, int z, BlockState current) {
+        if (spec.positions().dig(BlockPos.asLong(x, y, z)) >= COST_INF) {
+            return COST_INF;
+        }
+        if (spec.bans().breaking().contains(current.getBlock())) {
             return COST_INF;
         }
         if (!allowBreak && !allowBreakAnyway.contains(current.getBlock())) {
@@ -320,8 +323,24 @@ public class CalculationContext {
         return 1;
     }
 
+    /**
+     * 权限层对一个动作的裁决折成代价乘数:放行 1;拒绝 INF;需要主人同意——规格是
+     * {@link RouteSpec.Alter#ANY} 就 {@link #CONSENT_COST_MULTIPLIER}(算进路线,账单里单列),
+     * 否则 INF(有别的路就不走这条)。成本模型只读裁决,不自判。
+     */
+    protected double permissionMultiplier(Action action) {
+        Verdict verdict = gate.judge(action, view);
+        if (verdict.allowed()) {
+            return 1;
+        }
+        if (verdict.asks() && spec.alter() == RouteSpec.Alter.ANY) {
+            return CONSENT_COST_MULTIPLIER;
+        }
+        return COST_INF;
+    }
+
     /** 坠落中放水桶的成本(与放置罚金同价)。 */
     public double placeBucketCost() {
-        return placeBlockCost;
+        return spec.placeCost();
     }
 }

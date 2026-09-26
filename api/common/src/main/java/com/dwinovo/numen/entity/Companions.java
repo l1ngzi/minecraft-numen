@@ -198,28 +198,43 @@ public final class Companions {
      * 攒满被丢掉的条数也如实说一句:丢弃可以,无声消失不行。
      */
     private static void replayOutbox(MinecraftServer server, UUID ownerUuid, ServerPlayer owner) {
-        EventOutbox outbox = EventOutbox.get(server);
-        long now = System.currentTimeMillis();
+        List<UUID> companions = new ArrayList<>();
         for (Map.Entry<UUID, CompanionRegistry.Entry> e : CompanionRegistry.get(server).ownedBy(ownerUuid)) {
-            List<com.dwinovo.numen.event.EventQueue.Entry> pending = outbox.take(e.getKey(), now);
-            if (pending.isEmpty()) {
-                continue;
-            }
-            for (com.dwinovo.numen.event.EventQueue.Entry p : pending) {
-                Services.NETWORK.sendToPlayer(owner,
-                        new com.dwinovo.numen.network.payload.NumenEventPayload(
-                                e.getKey(), p.type(), p.text(), p.ts(), p.urgent()));
-            }
-            com.dwinovo.numen.Constants.LOG.info("[numen-outbox] {} 补发 {} 条离线输入",
-                    e.getKey(), pending.size());
+            companions.add(e.getKey());
         }
+        for (com.dwinovo.numen.network.payload.NumenEventPayload p
+                : outboxPayloads(EventOutbox.get(server), companions, System.currentTimeMillis())) {
+            Services.NETWORK.sendToPlayer(owner, p);
+            com.dwinovo.numen.Constants.LOG.info("[numen-outbox] {} 补发 {} 条离线输入",
+                    p.entityUuid(), p.entries().size());
+        }
+    }
+
+    /**
+     * 把出箱里攒的东西取出来,<b>一只同伴一个包</b>,装着她攒下的全部条目;什么都没攒的同伴不发。
+     *
+     * <p>整批一个包是为了一次送达:客户端收到一个包就一次入队、再问一次熟没熟。逐条发包的话,
+     * 第一条急件一到就开轮,只带走已经到的那几条,剩下的要等下一轮。
+     *
+     * <p>纯逻辑,不碰网络——留这个缝是为了"一只一个包、一条不少"能被单测钉住。
+     */
+    static List<com.dwinovo.numen.network.payload.NumenEventPayload> outboxPayloads(
+            EventOutbox outbox, Collection<UUID> companions, long now) {
+        List<com.dwinovo.numen.network.payload.NumenEventPayload> out = new ArrayList<>();
+        for (UUID companion : companions) {
+            List<com.dwinovo.numen.agent.inbox.EventQueue.Entry> pending = outbox.take(companion, now);
+            if (!pending.isEmpty()) {
+                out.add(new com.dwinovo.numen.network.payload.NumenEventPayload(companion, pending));
+            }
+        }
+        return out;
     }
 
     /**
      * A companion just DIED (detected in {@link NumenPlayer#tick}). The death itself is left fully
      * vanilla — drops / a grave mod / keepInventory all run because it's a real ServerPlayer death.
-     * We only: stop the brain (the owner's loop suspends on {@link NumenDeathPayload}, resolving the
-     * in-flight tool call with the death cause), heal the body so its saved {@code .dat} is whole, and
+     * We only: stop the brain (the owner's loop suspends on {@link NumenDeathPayload}, recording the
+     * cut-off turn with the death cause), heal the body so its saved {@code .dat} is whole, and
      * queue a timed respawn at the owner. The corpse is removed AFTER this tick (a fake player isn't
      * auto-removed on death — it would sit at 0 HP forever waiting for a respawn packet that never comes).
      */
@@ -235,10 +250,10 @@ public final class Companions {
         }
         if (cause == null || cause.isBlank()) cause = "未知原因";
         // 先把死亡消息发出去,再触发生命周期钩子——<b>顺序要紧</b>:死亡消息一到,
-        // 客户端就把输入队列锁上;此后钩子里产生的收尾事件(异步任务的
-        // task_finished status="interrupted")落进的是一个锁着的队列,安静躺到复活。
+        // 客户端的循环就停牌 DEAD;此后钩子里产生的收尾事件(异步任务的
+        // task_finished status="interrupted")照样进队列,但不开 run,安静躺到复活。
         //
-        // 反过来的话,那条 urgent 收尾事件会在锁上之前到达、当场开一轮,而紧接着的
+        // 反过来的话,那条 urgent 收尾事件会在停牌之前到达、当场开一轮,而紧接着的
         // 死亡消息又把那一轮整个作废——白烧一次请求,还多一条没人看的对话。
         ServerPlayer owner = body.resolveOwnerPlayer();
         if (owner != null) {   // immediate, same-session
@@ -346,7 +361,7 @@ public final class Companions {
     public static void onDimensionChanged(NumenPlayer body) {
         String dim = body.level().dimension().location().toString();
         com.dwinovo.numen.event.NumenEvents.emit(body,
-                com.dwinovo.numen.event.NumenEvents.Kind.DIMENSION_CHANGE,
+                com.dwinovo.numen.agent.inbox.EventTypes.DIMENSION_CHANGE,
                 java.util.Map.of("to", dim),
                 "你进入了 " + dim + "。留意这个维度的环境和危险。", false);
     }
@@ -371,7 +386,7 @@ public final class Companions {
         }
         boolean day = body.level().isDay();
         com.dwinovo.numen.event.NumenEvents.emit(body,
-                com.dwinovo.numen.event.NumenEvents.Kind.WOKE,
+                com.dwinovo.numen.agent.inbox.EventTypes.WOKE,
                 java.util.Map.of("cause", attacker != null ? "hurt" : day ? "daybreak" : "other"),
                 wokeText(day, attacker), true);
     }

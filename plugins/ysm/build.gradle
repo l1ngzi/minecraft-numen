@@ -3,6 +3,9 @@ plugins {
     id 'org.spongepowered.gradle.vanilla' version '0.2.1-SNAPSHOT'
 }
 
+// The slim API task must be configured before it is selected.
+evaluationDependsOn(':api:common')
+
 // 只写原版 MC 与 numen api,三个加载器都能跑:编译对着原版(VanillaGradle,与 api/common
 // 同一条路),加载器的类物理上不在类路径上,想用也编译不过。加载器之间不一样的那几件事
 // 经 YsmHost 由宿主提供。

@@ -29,10 +29,15 @@ public final class Builtin {
     private Builtin() {}
 
     public static void registerAll(IEventBus modBus) {
-        Gate gate = new Gate(ModList.get()::isLoaded);
+        Gate gate = new Gate(ModList.get()::isLoaded, com.dwinovo.numen.core.ModJar::find);
         gate.open("yes_steve_model", "ysm", skills -> () -> YsmOnForge.install(skills));
         gate.open("touhou_little_maid", "tlm",
                 skills -> () -> com.dwinovo.numen.plugins.tlm.NumenTlm.install(modBus, skills));
+        gate.open("kaleidoscope_cookery", "kaleidoscope",
+                skills -> () -> com.dwinovo.numen.plugins.kaleidoscope.NumenKaleidoscope.install(skills));
+        gate.open("curios", () -> com.dwinovo.numen.plugins.curios.NumenCurios::install);
+        gate.open("ftbquests", "ftbquests",
+                skills -> () -> com.dwinovo.numen.plugins.ftbquests.NumenFtbQuests.install(skills));
         // 注:这个 MC 版本上车万女仆没有按坐标播语音的口,所以那个联动只做模型不做语音。
     }
 

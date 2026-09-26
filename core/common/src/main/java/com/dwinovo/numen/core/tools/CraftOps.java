@@ -21,6 +21,10 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.crafting.CraftingRecipe;
 import net.minecraft.world.item.crafting.Ingredient;
+import net.minecraft.world.Container;
+import net.minecraft.world.inventory.ResultContainer;
+
+import com.dwinovo.numen.core.mixin.CraftingMenuAccessor;
 import net.minecraft.world.item.crafting.RecipeType;
 import net.minecraft.world.item.crafting.ShapedRecipe;
 import net.minecraft.world.level.block.CraftingTableBlock;
@@ -35,7 +39,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
-import net.minecraft.util.Mth;
 
 /**
  * The {@code craft} tool: the whole craft flow in one call — pick a recipe whose
@@ -53,14 +56,13 @@ import net.minecraft.util.Mth;
  */
 public final class CraftOps {
 
-    /** Eye-to-block-center reach for using a crafting table without walking. */
-    private static final double REACH = 4.5;
     /** "Where IS one" hint scan when no table is in reach (horizontal / vertical). */
     private static final int HINT_H = 16, HINT_V = 6;
     /** Rounds of fill-grid + shift-take; each round crafts up to a full stack per cell. */
     private static final int MAX_ROUNDS = 16;
 
     /** A crafting recipe candidate with its (input-independent) output count. */
+    /** @param holder 配方本体的持有者——铺完格子交还给菜单当 hint,省掉全表线性扫。 */
     private record Cand(CraftingRecipe recipe, int outCount) {}
 
     /** One grid cell to fill: row-major position in the target grid + what goes there. */
@@ -71,7 +73,7 @@ public final class CraftOps {
 
     public String craft(String item_id, Integer count, NumenPlayer self) {
         Item target = ToolArgs.parseItem(item_id);
-        int want = count == null ? 1 : Mth.clamp(count, 1, 256);
+        int want = count == null ? 1 : Math.clamp(count, 1, 256);
         if (!(self.level() instanceof ServerLevel level)) {
             return TaskResult.fail("crafting needs a server level.").toJson();
         }
@@ -160,15 +162,18 @@ public final class CraftOps {
                         + "interact_at that station and use inspect_gui + transfer instead.").toJson();
             }
             CraftingRecipe recipe = chosen.recipe();
-            BlockPos table = BlockScanner.nearestBlock(level, self.blockPosition(),
-                    self.getEyePosition(), (int) Math.ceil(REACH), 3, REACH,
-                    (pos, state) -> state.getBlock() instanceof CraftingTableBlock);
+            // 够得着的工作台:原版交互的判据(眼睛到那一格外框在交互距离内),搜索盒以眼睛为中心罩住它
+            BlockPos eyeCell = BlockPos.containing(self.getEyePosition());
+            int reachBox = (int) Math.ceil(com.dwinovo.numen.platform.Services.PLATFORM.blockInteractionRange(self));
+            BlockPos table = BlockScanner.nearestBlock(level, eyeCell, self.getEyePosition(), reachBox, reachBox,
+                    Double.MAX_VALUE, (pos, state) -> state.getBlock() instanceof CraftingTableBlock
+                            && com.dwinovo.numen.platform.Services.PLATFORM.canInteractWithBlock(self, pos, 0.0));
             if (table == null) {
                 // 类型认不出 ≠ 没有:有模组在放置时把工作台原地换成自家方块实体实现,
                 // 注册名、方块类、标签全变了,只有行为没变——所以第二遍问行为。
-                table = BlockScanner.nearestBlock(level, self.blockPosition(),
-                        self.getEyePosition(), (int) Math.ceil(REACH), 3, REACH,
-                        (pos, state) -> opensFittingGrid(level, pos, state, self, recipe));
+                table = BlockScanner.nearestBlock(level, eyeCell, self.getEyePosition(), reachBox, reachBox,
+                        Double.MAX_VALUE, (pos, state) -> com.dwinovo.numen.platform.Services.PLATFORM.canInteractWithBlock(self, pos, 0.0)
+                                && opensFittingGrid(level, pos, state, self, recipe));
             }
             if (table == null) {
                 BlockPos hintPos = BlockScanner.nearestBlock(level, self.blockPosition(),
@@ -226,7 +231,7 @@ public final class CraftOps {
         String stopped = null;
 
         for (int round = 0; round < MAX_ROUNDS && crafted < want; round++) {
-            int craftsLeft = (want - crafted + output - 1) / output;   // Java 17 无 Math.ceilDiv;两数皆正
+            int craftsLeft = Math.ceilDiv(want - crafted, output);
             int batch = feasibleBatch(ings, poolOf(menu, self), Math.min(craftsLeft, 64));
             if (batch <= 0) {
                 stopped = "ran out of materials";
@@ -244,6 +249,10 @@ public final class CraftOps {
                 }
                 sim.merge(pick, -batch, Integer::sum);
             }
+            // 摆完就自己要一次重算,不等 slotsChanged。那是个可被覆写的触发器:把重算推迟到
+            // 之后 server tick 的模组覆写的正是它,于是这一刻读到的结果槽还是空的(#110)。
+            // 结果槽只有原版那一趟写,这里直接要它算,对原版和那类模组都成立。
+            recompute(menu, grid, self);
             if (!laidOut) {
                 sweepGrid(menu, self, grid);
                 stopped = "couldn't lay out the grid (materials changed mid-craft?)";
@@ -251,7 +260,7 @@ public final class CraftOps {
             }
             if (menu.slots.get(grid.result()).getItem().isEmpty()) {
                 sweepGrid(menu, self, grid);
-                stopped = "the laid-out grid doesn't form this recipe (unexpected — mod interference?)";
+                stopped = "the laid-out grid doesn't form this recipe";
                 break;
             }
             int have0 = PlayerInv.count(self.getInventory(), target);
@@ -301,6 +310,22 @@ public final class CraftOps {
         return TaskResult.ok(msg.toString(), Map.of("crafted", crafted, "carrying", carrying)).toJson();
     }
 
+    /**
+     * 按当前格局重算结果槽。容器从菜单自己的槽位上取({@code Slot.container}),所以
+     * 工作台和她自己的 2×2 走同一条;拿不到原版那两种容器的(模组自定义合成台)就不动,
+     * 行为与从前一致。
+     */
+    private static void recompute(AbstractContainerMenu menu, Grid grid, NumenPlayer self) {
+        if (!(self.level() instanceof ServerLevel level)) {
+            return;
+        }
+        Container cells = menu.slots.get(grid.cells()[0]).container;
+        Container out = menu.slots.get(grid.result()).container;
+        if (cells instanceof CraftingContainer craft && out instanceof ResultContainer result) {
+            CraftingMenuAccessor.numen$recompute(menu, level, self, craft, result);
+        }
+    }
+
     private static TreeSet<Item> union(Map<Item, Integer> a, Map<Item, Integer> b) {
         TreeSet<Item> keys = new TreeSet<>((x, y) -> BuiltInRegistries.ITEM.getKey(x).compareTo(
                 BuiltInRegistries.ITEM.getKey(y)));
@@ -315,7 +340,6 @@ public final class CraftOps {
         List<Cand> out = new ArrayList<>();
         // 只取合成类型的表:模组自定义类型(机器配方)根本不进循环——执行层本来就
         // 只会往标准合成格里摆料,几万条配方的整合包也省下全量遍历。
-        // 1.20.1:配方表直接给 Recipe,还没有 RecipeHolder 包装。
         for (CraftingRecipe cr : level.getRecipeManager().getAllRecipesFor(RecipeType.CRAFTING)) {
             try {
                 // 产出依赖输入的配方(烟花、镶零件的装备)静态匹配答不了——模组

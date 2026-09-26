@@ -3,7 +3,10 @@ package com.dwinovo.numen.core.pathing.goal;
 import com.dwinovo.numen.core.pathing.bridge.GoalAdapter;
 import com.dwinovo.numen.core.pathing.calc.NavGoal;
 import com.dwinovo.numen.core.pathing.goals.Goal;
-import com.dwinovo.numen.core.pathing.util.BlockHelper;
+import com.dwinovo.numen.core.pathing.moves.BlockReach;
+import com.dwinovo.numen.core.pathing.spec.CellClass;
+import com.dwinovo.numen.core.pathing.spec.PositionCosts;
+import com.dwinovo.numen.core.pathing.spec.RouteSpec;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import it.unimi.dsi.fastutil.longs.LongSets;
@@ -54,14 +57,15 @@ public final class GoalCompiler {
         public Compiled(NavGoal goal, LongSet sacred) {
             this(goal, GoalAdapter.toEngineGoal(goal), sacred);
         }
-    }
 
-    /**
-     * One mining stance: the ore (what becomes sacred), the stance BASE the feet
-     * band hangs from (usually the ore itself, but a run's top block anchors one
-     * lower — see {@code MineCompanionTask.coalesce}), and how far below that
-     * base the feet may end ({@link NavGoal#mineColumn}).
-     */
+        /**
+         * 把本目标的 sacred 格并进规格(禁挖禁放):朝这个目标的每次搜索与每次执行期复核
+         * 都用它得到的规格。这是规划器的正确性约束——别挖自己要站、要够的那格——不是权限。
+         */
+        public RouteSpec protecting(RouteSpec spec) {
+            return spec.withPositions(spec.positions().plus(PositionCosts.protect(sacred)));
+        }
+    }
 
     /**
      * Use/open/work at a block (crafting table, chest, furnace, door): end
@@ -97,13 +101,13 @@ public final class GoalCompiler {
         return new Compiled(NavGoal.nearGround(c, radius), LongSets.emptySet());
     }
 
-    /** The {@code resolveBlockGoal} replacement: a walkable cell is a place to
-     *  stand, an occupied one is a block to get to (and not consume). */
-    public static Compiled block(Level level, BlockPos cell) {
-        return block(BlockHelper.canWalkThrough(level, cell), cell);
+    /** The {@code resolveBlockGoal} replacement: a walkable cell (under the route's
+     *  spec) is a place to stand, an occupied one is a block to get to (and not consume). */
+    public static Compiled block(Level level, BlockPos cell, RouteSpec spec) {
+        return block(CellClass.canWalkThrough(level, cell, spec), cell);
     }
 
-    /** Pure core of {@link #block(Level, BlockPos)} (headless-testable). */
+    /** Pure core of {@link #block(Level, BlockPos, RouteSpec)} (headless-testable). */
     public static Compiled block(boolean cellWalkable, BlockPos cell) {
         return cellWalkable ? standOn(cell) : interact(cell);
     }
@@ -121,11 +125,16 @@ public final class GoalCompiler {
      * break loses nothing: the cell leaves knownOres on the next prune, its drop
      * is collected by the drop members, and progress counts inventory, not dig
      * events.
+     *
+     * <p>每个目标的站位带着挖它的价钱({@code digCost},成本模型的定价:需要主人同意的格贵十倍),
+     * 搜索按"走过去 + 挖它"的总价挑先去哪一块,不是谁近挑谁。站位按身体的 {@code reach} 算
+     * ({@link NavGoal#mineStance})。
      */
-    public static Compiled mineField(List<BlockPos> ores, List<BlockPos> drops) {
+    public static Compiled mineField(List<BlockPos> ores, java.util.function.ToDoubleFunction<BlockPos> digCost,
+                                     List<BlockPos> drops, BlockReach reach) {
         List<NavGoal> members = new ArrayList<>(ores.size() + drops.size());
         for (BlockPos ore : ores) {
-            members.add(NavGoal.mineStance(ore));
+            members.add(NavGoal.priced(NavGoal.mineStance(ore, reach), digCost.applyAsDouble(ore)));
         }
         for (BlockPos drop : drops) {
             members.add(NavGoal.exact(drop));     // items, not blocks

@@ -45,6 +45,9 @@ public abstract class MixinServerGamePacketListener {
     @Inject(method = "send(Lnet/minecraft/network/protocol/Packet;)V", at = @At("HEAD"), cancellable = true)
     private void numen$dropOutboundForFakeConnection(Packet<?> packet, CallbackInfo ci) {
         if (this.connection instanceof FakeConnection) {
+            if (((ServerGamePacketListenerImpl) (Object) this).player instanceof com.dwinovo.numen.entity.NumenPlayer companion) {
+                companion.fakeClient().onOutbound(packet);
+            }
             ci.cancel();
         }
     }

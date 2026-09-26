@@ -1,0 +1,26 @@
+plugins {
+    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+    id 'numen-plugin'
+}
+
+// The slim API task must be configured before it is selected.
+evaluationDependsOn(':api:forge')
+
+// 森罗物语:厨房在这个 MC 版本上只有 Forge 版(1.1.0 起停发 Fabric),而本联动要直接
+// 调它的方块实体(IPot/IStockpot)与品质评估器,编译对着 Forge。Fabric 上装不上森罗,
+// 那边没有这个联动,也不需要有。
+minecraft { mappings channel: 'official', version: minecraft_version }
+
+repositories {
+    // ForgeGradle serves _mapped_ versions from its generated repository.
+    exclusiveContent {
+        forRepository { maven { name = 'Modrinth'; url = 'https://api.modrinth.com/maven' } }
+        filter { includeVersionByRegex('maven\\.modrinth', '.*', '^(?!.*_mapped_).*$') }
+    }
+}
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+    compileOnly files(project(':api:forge').tasks.named('apiJar'))
+    compileOnly fg.deobf("maven.modrinth:kaleidoscope-cookery:${kaleidoscope_version}")
+}

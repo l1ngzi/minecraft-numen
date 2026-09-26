@@ -4,30 +4,34 @@ import java.util.List;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 import com.dwinovo.numen.core.Constants;
-import com.dwinovo.numen.core.pathing.astar.Favoring;
-import com.dwinovo.numen.core.pathing.astar.NavPath;
-import com.dwinovo.numen.core.pathing.astar.PathCalcResult;
 import com.dwinovo.numen.core.pathing.bridge.ContextFactory;
 import com.dwinovo.numen.core.pathing.bridge.PoolSearchDispatcher;
-import com.dwinovo.numen.core.pathing.bridge.SearchHandle;
 import com.dwinovo.numen.core.pathing.calc.NavGoal;
-import com.dwinovo.numen.core.pathing.execute.PathExecutor;
-import com.dwinovo.numen.core.pathing.execute.PathingCore;
 import com.dwinovo.numen.core.pathing.goal.GoalCompiler;
 import com.dwinovo.numen.core.pathing.goals.Goal;
 import com.dwinovo.numen.core.pathing.moves.CalculationContext;
-import com.dwinovo.numen.core.pathing.moves.TerrainPermit;
-import com.dwinovo.numen.core.pathing.settings.NavSettings;
+import com.dwinovo.numen.core.pathing.moves.Movement;
+import com.dwinovo.numen.core.pathing.moves.MutableMoveResult;
+import com.dwinovo.numen.core.pathing.plan.RouteBook;
+import com.dwinovo.numen.core.pathing.plan.RoutePlanner;
+import com.dwinovo.numen.core.pathing.spec.RouteSpec;
 import com.dwinovo.numen.core.pathing.util.NavProfiler;
+import com.dwinovo.numen.core.pathing.astar.NavPath;
+import com.dwinovo.numen.core.pathing.astar.PathCalcResult;
 import com.dwinovo.numen.core.FailureType;
 import com.dwinovo.numen.entity.InputDriver;
 import com.dwinovo.numen.entity.NumenPlayer;
+import com.dwinovo.numen.permission.ConsentItem;
+import com.dwinovo.numen.permission.Permission;
 
-import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
-import it.unimi.dsi.fastutil.longs.LongSet;
 import it.unimi.dsi.fastutil.longs.LongSets;
 import net.minecraft.core.BlockPos;
+
+import static com.dwinovo.numen.core.pathing.moves.ActionCosts.COST_INF;
 
 /**
  * 任务层的导航正门:把一份编译好的导航契约({@link GoalCompiler.Compiled})
@@ -46,16 +50,22 @@ import net.minecraft.core.BlockPos;
  * {@link #MAX_STALLED_REPLANS} 次失败重规划目标启发值无 ≥{@link #REPLAN_PROGRESS_EPS_H}
  * 改善 → FAILED(BOXED_IN);{@link #MAX_REPLANS} 次硬保险丝兜底。
  *
- * <p>sacred(自身目标格,不可挖不可埋)/ deniedPlace(执行层证明放不上
- * 的格)两个语义开关穿透本导航建的每一个
- * {@link CalculationContext}:搜索用冻结快照、执行期复核用活世界,同一
- * 套开关同一把尺。
+ * <p>这次导航的路线规格({@link RouteSpec})在构造时定死:提供者给的规格,加上
+ * speed 折成的疾跑门;每次拉目标再把 sacred(自身目标格,不可挖不可埋)作为按位置
+ * 的代价并进去。本导航建的每一个 {@link CalculationContext}——搜索用冻结快照、
+ * 执行期复核用活世界——带的都是同一份规格,同一把尺。
  *
- * <p><b>不动地形的路找不到时</b>(许可为 PRESERVE 的首段 NO_PATH),不立刻终局:
- * 用可改地形的上下文只搜不走地探一次,把那条路<b>会</b>挖什么、放什么列成清单
- * ({@link TerrainBill})交给任务层——裁决是 {@link FailureType#TERRAIN_BLOCKED},
- * 模型读清单决定要不要授权(re-send with may_alter_terrain)。引擎不替它猜
- * "这是不是玩家的房子":木板玻璃在地表是房子,石头泥土在地下不是,这个判断归模型。
+ * <p><b>不动地形的路找不到时</b>(规格不改地形的首段 NO_PATH),不立刻终局:
+ * 用可自然改动的规格向 {@link RoutePlanner} 只搜不走地查一次候选路线,自然改动也没路再用
+ * {@link RouteSpec.Alter#ANY} 查一次(候选的账单标出哪些格要主人同意);每条带预算账
+ * ({@link TerrainBill}),记进这具身体的 {@link RouteBook},清单交给任务层——裁决是
+ * {@link FailureType#TERRAIN_BLOCKED},模型读清单挑一条({@code goto route:<id>})或换目的地。
+ * 引擎不替它猜"这是不是玩家的房子":木板玻璃在地表是房子,石头泥土在地下不是,这个判断归模型。
+ *
+ * <p><b>开走之前问主人</b>:规格是 {@link RouteSpec.Alter#ANY} 时,每一段路被采纳之前出一张预算账,
+ * 里面有要问主人的格就扣住不走({@link #consentNeeded}),由任务发起征询;主人答应之后
+ * ({@link #consentGranted})按新的授权重看,都覆盖了才开走。别的规格下这些格的代价是 INF,
+ * 规划不出穿过它们的路,不需要这道口。
  */
 public final class PlayerNav {
 
@@ -92,30 +102,25 @@ public final class PlayerNav {
     private final ContextProvider contextProvider;
     private final boolean revalidateGoalEachTick;
     /**
-     * speed 参数保留在签名上;新执行体系不支持变速(移动全走原版输入
-     * 物理),这里把它路由成疾跑门:speed &lt; 1.0 表示"慢速",本导航
-     * 的每个 tick 里禁疾跑(见 {@link #tick} 的 allowSprint 包夹)。
+     * 这次导航的路线规格(不含按目标变化的位置代价)。speed 参数保留在签名上;
+     * 执行体系不支持变速(移动全走原版输入物理),speed &lt; 1.0 表示"慢速",
+     * 折成规格里的疾跑关——搜索上下文的 canSprint 与执行器的逐 tick 疾跑决策
+     * 读的都是这一份。
      */
-    private final boolean sprintAllowed;
+    private final RouteSpec spec;
 
+    /** 这次导航的派发口:状态机与查询口的每一次搜索都从它派出,"身体在等规划"只从它读。 */
+    private final NavSearches searches;
     /** 段规划状态机:搜索派发、段执行、无缝接段、失败自动重搜全在其内。 */
     private final PathingCore core;
+    /** 只搜不走的查询口(无路探针走它),与状态机同一派发器、同一上下文来源。 */
+    private final RoutePlanner planner;
 
     /**
-     * 最近一次拉取的目标的 sacred 格({@code BlockPos.asLong()} 键)。
-     * 每次拉目标同步刷新——goal 与 sacred 是同一份契约,不允许分开读。
+     * 最近一次拉取的目标契约(goal 与 sacred 一体)。每次拉目标同步刷新——规格里的
+     * 位置保护从它派生,不允许 goal 与 sacred 分开读。
      */
-    private LongSet sacred = LongSets.emptySet();
-    /**
-     * 执行层证明"无支撑放不上"(NO_SUPPORT)的格,本次导航内累积、
-     * 穿进此后每次搜索,确定性重搜才不会反复规划同一个不可能的脚手架。
-     *
-     * <p>回填点说明:新执行体系里放置失败表现为移动原语 FAILED → 整段
-     * 取消重规划,途中不携带"哪一格无支撑"的结构化信息;能拿到该信息
-     * 时在 {@link #tick} 的执行失败分支里 {@code deniedPlace.add(...)}。
-     * 机制与上下文穿透保留,当前无生产者。
-     */
-    private final LongOpenHashSet deniedPlace = new LongOpenHashSet();
+    private GoalCompiler.Compiled contract;
 
     /**
      * 搜索目标在脚下即满足、而 caller 的 reached 仍不满足:钉稳 ARRIVED
@@ -123,6 +128,8 @@ public final class PlayerNav {
      * 的一跳 target lost。目标真移动时照常重根清位。
      */
     private boolean searchSatisfied;
+    /** 钉稳时的目标。活目标每刻重取,按它定下的"停在脚下"不再算数({@link Goal#keepsStop})就作废、重新搜。 */
+    private Goal settledGoal;
     /** 最近一次下发给状态机的目标中心(重根判定的基准)。 */
     private BlockPos plannedCenter;
 
@@ -143,19 +150,33 @@ public final class PlayerNav {
     private CalculationContext lastSearchContext;
 
     /**
-     * 无路时要不要探"若许改地形则此路"。默认不探:探针要站着等两秒,追怪/跟随这类
+     * 无路时要不要查"若许改地形有哪几条路"。默认不查:查询要站着等几秒,追怪/跟随这类
      * 活目标的导航等不起,也没人会为了够一只僵尸去拆墙。goto 与接近类交互任务开它——
-     * 那里的失败回执是模型下一步决策的依据,清单值这两秒。
+     * 那里的失败回执是模型下一步决策的依据,候选清单值这几秒。
      */
     private boolean terrainProbe;
-    /** 在飞的"若许改地形则此路"探针搜索;非空时本导航原地等它出结论,不再驱动状态机。 */
-    private SearchHandle terraformProbe;
-    /** 探针所针对的目标(验尸文案用)。 */
-    private NavGoal terraformProbeGoal;
+    /** 在飞的候选路线查询;非空时本导航原地等它出结论,不再驱动状态机。 */
+    private RoutePlanner.Query probe;
+    /** 在飞查询用的改动档:先 NATURAL,没路再 ANY。 */
+    private RouteSpec.Alter probeAlter;
+    /** 引出查询的那次首段搜索为什么停——候选清单前那句"原规格下没搜到路"说的就是它。 */
+    private PathCalcResult.Stop cleanStop;
+    /** 扣着的那段路要问主人的清单(采纳时出账算好)。 */
+    private List<ConsentItem> heldConsent = List.of();
+    /** 查询所针对的目标契约(候选记入路线簿时带上)。 */
+    private GoalCompiler.Compiled probeGoal;
+    /**
+     * 有限改动预算下的整路规划;非空时原地等它出结论。预算是规划时的约束——直接派搜索
+     * 会绕过它,所以设了预算的导航先按规格规划整条路,预算内才采纳。
+     */
+    private RoutePlanner.Query budgetPlan;
+    /** 预算已核过(采纳了预算内的整路,或走的是规划好的路线)。 */
+    private boolean budgetPlanned;
 
     /** 单格目标:按意图编译(可走格=站上去,占用格=贴脸即到,不吞噬目标)。 */
     public PlayerNav(NumenPlayer player, BlockPos goal, double speed, BooleanSupplier reached) {
-        this(player, speed, reached, () -> GoalCompiler.block(player.level(), goal));
+        this(player, speed, reached,
+                () -> GoalCompiler.block(player.level(), goal, ContextProvider.DEFAULT.spec()));
     }
 
     /** 可移动的单格目标:每次拉取重新按意图编译(格位腾空后收紧为站上去)。 */
@@ -163,7 +184,8 @@ public final class PlayerNav {
                      BooleanSupplier reached) {
         this(player, speed, reached, () -> {
             BlockPos g = goalSupplier.get();
-            return g == null ? null : GoalCompiler.block(player.level(), g);
+            return g == null ? null
+                    : GoalCompiler.block(player.level(), g, ContextProvider.DEFAULT.spec());
         });
     }
 
@@ -193,7 +215,7 @@ public final class PlayerNav {
         return new PlayerNav(player, speed, reached, compiled, true);
     }
 
-    /** 裸自定义目标(runAway、column 等)。不带 sacred——有方块目标的意图
+    /** 裸自定义目标(avoid、column 等)。不带 sacred——有方块目标的意图
      *  应走 {@link #to} / {@link GoalCompiler},让目标受保护。 */
     public static PlayerNav toGoal(NumenPlayer player, Supplier<NavGoal> goalSupplier,
                                    double speed, BooleanSupplier reached) {
@@ -227,12 +249,48 @@ public final class PlayerNav {
     }
 
     /**
-     * 开启无路探针:只走不改找不到路时,探一条可改地形的路并把要动的方块列给任务层
+     * 开启无路探针:只走不改找不到路时,查可改地形的候选路线并把清单列给任务层
      * (见类文档)。建好导航、首次 tick 前调用。
      */
     public PlayerNav withTerrainProbe() {
         this.terrainProbe = true;
         return this;
+    }
+
+    /** 身体离路线起点最多这么远(格,平方)还算"还在起点上"。 */
+    private static final double ROUTE_START_SQR = 4.0;
+
+    /**
+     * 沿路线簿里的一条路走:目标与规格都是那条路的;缓存的路径还有效——身体没离开起点、
+     * 首段此刻仍可走——就直接走它,否则在同一规格下重算。中途被堵也在同一规格下重算,
+     * 不会偷偷换成另一种走法。
+     */
+    public static PlayerNav alongRoute(NumenPlayer player, RouteBook.Route route, BooleanSupplier reached) {
+        PlayerNav nav = new PlayerNav(player, 1.0, reached, route::goal, false,
+                ContextProvider.of(route.spec()));
+        nav.contract = route.goal();
+        nav.plannedCenter = route.goal().goal().center();
+        nav.seed(route);
+        return nav.withTerrainProbe();
+    }
+
+    /** 缓存路径的有效性只在这里判:起点两格内、首段用活世界复核仍可行。 */
+    private void seed(RouteBook.Route route) {
+        if (route.path().movements().isEmpty()) {
+            return;   // 起点即目标:状态机自己会判脚下满足
+        }
+        if (PathExecutor.playerFeet(player).distSqr(route.start()) > ROUTE_START_SQR) {
+            Constants.LOG.info("[numen-path] 路线 {} 的起点 {} 离身体太远,同一规格下重算",
+                    route.id(), route.start().toShortString());
+            return;
+        }
+        Movement first = route.path().movements().get(0);
+        if (first.calculateCost(executionContext(), new MutableMoveResult()) >= COST_INF) {
+            Constants.LOG.info("[numen-path] 路线 {} 的首段此刻走不了,同一规格下重算", route.id());
+            return;
+        }
+        core.seed(route.goal().engineGoal(), route.path());
+        budgetPlanned = true;
     }
 
     /** 把裸目标包成无 sacred 的编译契约(engineGoal 经词表映射同步派生)。 */
@@ -261,59 +319,98 @@ public final class PlayerNav {
                       boolean revalidateGoalEachTick, ContextProvider contextProvider) {
         this.player = player;
         this.compiledSupplier = compiledSupplier;
-        this.sprintAllowed = speed >= 1.0;
         this.reached = reached;
         this.contextProvider = contextProvider == null ? ContextProvider.DEFAULT : contextProvider;
         this.revalidateGoalEachTick = revalidateGoalEachTick;
-        this.core = new PathingCore(player, PoolSearchDispatcher.INSTANCE,
-                this::searchContext, this::executionContext, this.contextProvider.permit());
+        RouteSpec provided = this.contextProvider.spec();
+        this.spec = speed >= 1.0 ? provided : provided.withSprint(false);
+        this.searches = new NavSearches(PoolSearchDispatcher.INSTANCE);
+        this.core = new PathingCore(player, searches,
+                this::searchContext, this::executionContext, spec, this::admits);
+        this.planner = new RoutePlanner(searches,
+                s -> this.contextProvider.forSearch(player, s), player.level(),
+                () -> Permission.gateFor(player));
     }
 
-    /** 搜索用冻结上下文:快照世界 + 快照背包,穿透三个语义开关。 */
+    /**
+     * 一段路能不能开走:{@link RouteSpec.Alter#ANY} 下出一张预算账,没有要问主人的格才放行;
+     * 要问的清单记下来({@link #consentNeeded})。判据就是账单里权限层填的那一条,这里不另判。
+     */
+    private boolean admits(NavPath path) {
+        if (spec.alter() != RouteSpec.Alter.ANY) {
+            return true;
+        }
+        heldConsent = TerrainBill.planned(path,
+                com.dwinovo.numen.core.pathing.cache.LoadedOnlyView.of(player.level()),
+                Permission.gateFor(player)).consentItems();
+        return heldConsent.isEmpty();
+    }
+
+    /** 扣着等主人点头的那段路要问的清单;没有扣着的路是空表。 */
+    public List<ConsentItem> consentNeeded() {
+        return core.heldPath() == null ? List.of() : heldConsent;
+    }
+
+    /** 主人答应了:按新的授权重看扣着的那段路,都覆盖了就开走;还有没覆盖的就继续扣着。 */
+    public void consentGranted() {
+        NavPath held = core.heldPath();
+        if (held != null && admits(held)) {
+            core.releaseHeld();
+        }
+    }
+
+    /** 这次搜索/复核用的规格:导航规格加上当前目标的 sacred 格(禁挖禁放)。 */
+    private RouteSpec routeSpec() {
+        return contract == null ? spec : contract.protecting(spec);
+    }
+
+    /** 搜索用冻结上下文:快照世界 + 快照背包 + 本次规格。 */
     private CalculationContext searchContext() {
-        CalculationContext ctx = contextProvider.forSearch(player, sacred, deniedPlace);
+        CalculationContext ctx = contextProvider.forSearch(player, routeSpec());
         lastSearchContext = ctx;
         return ctx;
     }
 
-    /** 执行期复核用实时上下文:活世界 + 当下背包,同一套语义开关。 */
+    /** 执行期复核用实时上下文:活世界 + 当下背包,同一份规格。 */
     private CalculationContext executionContext() {
-        return contextProvider.forExecution(player, sacred, deniedPlace);
+        return contextProvider.forExecution(player, routeSpec());
     }
 
     /**
-     * 一次导航的成本上下文来源:搜索用冻结快照、执行用活世界,外加这次移动的地形许可。
-     * 许可只在这里定一次——上下文按它折成本,执行器按它决定能不能顺手放一块。
+     * 一次导航的成本上下文来源:搜索用冻结快照、执行用活世界,外加这次导航的路线规格。
+     * 规格只在这里定一次——上下文按它折成本,移动原语按它决定能不能顺手放一块。
      */
     public interface ContextProvider {
         /** 缺省:只走不改。接近类动作全部用它,忘了指定也只会更保守。 */
-        ContextProvider DEFAULT = of(TerrainPermit.PRESERVE);
-        /** 可改地形:挖矿、施工,以及模型显式授权的 goto。 */
-        ContextProvider TERRAFORM = of(TerrainPermit.TERRAFORM);
+        ContextProvider DEFAULT = of(RouteSpec.defaults());
+        /** 可自然改动:挖矿这类天然要动地形的意图。 */
+        ContextProvider NATURAL = of(RouteSpec.defaults().withAlter(RouteSpec.Alter.NATURAL));
 
-        static ContextProvider of(TerrainPermit permit) {
+        static ContextProvider of(RouteSpec spec) {
             return new ContextProvider() {
                 @Override
-                public CalculationContext forSearch(NumenPlayer player, LongSet sacred, LongSet deniedPlace) {
-                    return ContextFactory.forSearch(player, sacred, deniedPlace, permit);
+                public RouteSpec spec() {
+                    return spec;
                 }
 
                 @Override
-                public CalculationContext forExecution(NumenPlayer player, LongSet sacred, LongSet deniedPlace) {
-                    return ContextFactory.forExecution(player, sacred, deniedPlace, permit);
+                public CalculationContext forSearch(NumenPlayer player, RouteSpec spec) {
+                    return ContextFactory.forSearch(player, spec);
                 }
 
                 @Override
-                public TerrainPermit permit() {
-                    return permit;
+                public CalculationContext forExecution(NumenPlayer player, RouteSpec spec) {
+                    return ContextFactory.forExecution(player, spec);
                 }
             };
         }
 
-        CalculationContext forSearch(NumenPlayer player, LongSet sacred, LongSet deniedPlace);
-        CalculationContext forExecution(NumenPlayer player, LongSet sacred, LongSet deniedPlace);
-        /** 本提供者建出的上下文所带的地形许可(执行器据此决定顺手的放置能不能做)。 */
-        TerrainPermit permit();
+        /** 这次导航的路线规格(不含按目标变化的位置代价,那由导航自己并进去)。 */
+        RouteSpec spec();
+
+        CalculationContext forSearch(NumenPlayer player, RouteSpec spec);
+
+        CalculationContext forExecution(NumenPlayer player, RouteSpec spec);
     }
 
     /** ARRIVED-IN-PLACE 已打点(边沿去重)。 */
@@ -332,8 +429,8 @@ public final class PlayerNav {
             failType = FailureType.TARGET_LOST;
             return Status.FAILED;
         }
-        if (terraformProbe != null) {
-            return pollTerraformProbe();
+        if (probe != null) {
+            return pollProbe();
         }
         // 步行导航驱动的是脚下的身体:坐着任何载具都先下来——乘客的行走输入对载具
         // 无效,不在这儿下就坐着"走"到失速。全仓步行任务共用这一处,别在任务层各判各的。
@@ -349,7 +446,7 @@ public final class PlayerNav {
         if (compiled == null) {
             return fail(FailureType.TARGET_LOST, "target lost");
         }
-        sacred = compiled.sacred();
+        contract = compiled;
         NavGoal navGoal = compiled.goal();
 
         // 目标中心移动 >2 格:重根(进度量尺随之复位,状态机自会软取消旧段)
@@ -358,7 +455,7 @@ public final class PlayerNav {
             bestGoalH = Double.MAX_VALUE;
             ticksSincePlan = 0;
             plannedCenter = navGoal.center();
-            withSprintGate(() -> core.setGoalAndPath(compiled.engineGoal()));
+            core.setGoalAndPath(compiled.engineGoal());
             return Status.RUNNING;
         }
         // 活目标:到点就重取一次。进度量尺不复位——那是给"卡住了"用的,不该被节拍抹平。
@@ -366,7 +463,7 @@ public final class PlayerNav {
             ticksSincePlan = 0;
             searchSatisfied = false;
             plannedCenter = navGoal.center();
-            withSprintGate(() -> core.setGoalAndPath(compiled.engineGoal()));
+            core.setGoalAndPath(compiled.engineGoal());
             return Status.RUNNING;
         }
         if (plannedCenter == null) {
@@ -378,23 +475,28 @@ public final class PlayerNav {
                 return Status.ARRIVED;
             }
             BlockPos feet = PathExecutor.playerFeet(player);
-            if (compiled.engineGoal().isInGoal(feet.getX(), feet.getY(), feet.getZ())) {
+            if (Goal.keepsStop(settledGoal, compiled.engineGoal(), feet.getX(), feet.getY(), feet.getZ())) {
                 return Status.ARRIVED;
             }
             searchSatisfied = false;
         }
 
+        if (spec.budgeted() && spec.alter().mayAlter() && !budgetPlanned) {
+            Status planning = planWithinBudget(compiled);
+            if (planning != null) {
+                return planning;
+            }
+        }
+
         PathExecutor before = core.getCurrent();
         long tExec = NavProfiler.begin();
-        withSprintGate(() -> {
-            // 状态机空闲(初次、或结果被判孤儿丢弃)时(重新)下发目标;
-            // setGoalAndPath 已在目标内/已有段/已有在飞搜索时自会不派发
-            if (revalidateGoalEachTick || core.getGoal() == null
-                    || (core.getCurrent() == null && !core.hasInProgressSearch())) {
-                core.setGoalAndPath(compiled.engineGoal());
-            }
-            core.tick();
-        });
+        // 状态机空闲(初次、或结果被判孤儿丢弃)时(重新)下发目标;
+        // setGoalAndPath 已在目标内/已有段/已有在飞搜索时自会不派发
+        if (revalidateGoalEachTick || core.getGoal() == null
+                || (core.getCurrent() == null && !core.hasInProgressSearch())) {
+            core.setGoalAndPath(compiled.engineGoal());
+        }
+        core.tick();
         NavProfiler.end("core.tick", tExec);
 
         // 首段搜索失败:验尸并终局。裁定前再问一次 caller 谓词——本 tick
@@ -403,15 +505,17 @@ public final class PlayerNav {
             if (reached.getAsBoolean()) {
                 return Status.ARRIVED;
             }
-            // 只走不改找不到路:先探一条可改地形的路,把它会动什么列出来再裁决——
-            // 模型要的是"授权什么"的具体清单,不是一句 no path
-            if (terrainProbe && contextProvider.permit() == TerrainPermit.PRESERVE
-                    && submitTerraformProbe(compiled.engineGoal(), navGoal)) {
+            // 找不到路:先查放宽一档的候选路线,把每条会动什么列出来再裁决——模型要的是带价签的
+            // 选项,不是一句 no path。只走不改的先查自然改动;自然改动的直接查连要主人同意的格也算的
+            boolean preserving = !spec.alter().mayAlter();
+            cleanStop = core.failedStop();
+            if (terrainProbe && spec.alter() != RouteSpec.Alter.ANY
+                    && submitProbe(compiled, preserving ? RouteSpec.Alter.NATURAL : RouteSpec.Alter.ANY)) {
                 InputDriver.halt(player);
                 return Status.RUNNING;
             }
             return fail(FailureType.NO_PATH, noPathAutopsy(navGoal,
-                    contextProvider.permit() == TerrainPermit.PRESERVE ? " without altering terrain" : ""));
+                    preserving ? " without altering terrain" : "", TerrainBill.searchStopped(cleanStop)));
         }
 
         // 执行失败(段被取消,状态机已自动重搜):做放弃判定的记账
@@ -432,6 +536,7 @@ public final class PlayerNav {
             BlockPos feet = PathExecutor.playerFeet(player);
             if (engineGoal.isInGoal(feet.getX(), feet.getY(), feet.getZ())) {
                 searchSatisfied = true;
+                settledGoal = engineGoal;
                 if (!arrivedInPlaceLogged) {
                     // 只在进入边沿打一次:任务层反复重建导航时,同一驻留会逐 tick 重进
                     // 这个分支,连续打点是日志洪水
@@ -448,26 +553,8 @@ public final class PlayerNav {
     }
 
     /**
-     * speed 参数的落点:本导航的每一段驱动都包在 allowSprint 门里,
-     * slow(speed&lt;1.0)时全局禁疾跑——搜索上下文的 canSprint 快照与
-     * 执行器的逐 tick 疾跑决策读的都是这一个开关,包夹后原值复原,
-     * 不影响别的同伴。
-     */
-    private void withSprintGate(Runnable body) {
-        NavSettings settings = NavSettings.get();
-        boolean saved = settings.allowSprint;
-        settings.allowSprint = saved && sprintAllowed;
-        try {
-            body.run();
-        } finally {
-            settings.allowSprint = saved;
-        }
-    }
-
-    /**
      * 一次失败重规划的记账。进度按目标自己的启发函数在脚下的取值度量
-     * (yLevel 只看竖直、column 只看水平、composite 看最近成员、runAway
-     * 负值随逃离下降,各自天然正确);有真实改善清零连击,否则连击到
+     * (yLevel 只看竖直、column 只看水平、composite 看最近成员,各自天然正确);有真实改善清零连击,否则连击到
      * {@link #MAX_STALLED_REPLANS} 判 BOXED_IN。返回 null 表示继续跑。
      */
     private Status accountReplan(NavGoal liveGoal) {
@@ -502,89 +589,140 @@ public final class PlayerNav {
     }
 
     /**
-     * 派一次"若许改地形则此路"的探针:与状态机同一派发器、同一目标、同一起点,只换成
-     * TERRAFORM 上下文;只搜不走——结论到手只产出清单,绝不执行。
+     * 查一次"若许这一档改动有哪几条路":与状态机同一派发器、同一目标、同一起点,只把规格的改动档
+     * 换成 {@code alter},要 {@link RoutePlanner#MAX_ALTERNATIVES} 条;只搜不走。
      *
      * @return 是否真的派出去了(派不出去时直接按 NO_PATH 裁决)
      */
-    private boolean submitTerraformProbe(Goal engineGoal, NavGoal navGoal) {
+    private boolean submitProbe(GoalCompiler.Compiled compiled, RouteSpec.Alter alter) {
         BlockPos start = core.pathStart();
         if (start == null) {
             return false;
         }
-        CalculationContext probeContext = ContextFactory.forSearch(player, sacred, deniedPlace,
-                TerrainPermit.TERRAFORM);
-        NavSettings settings = NavSettings.get();
-        terraformProbe = PoolSearchDispatcher.INSTANCE.submit(PathExecutor.playerFeet(player), start,
-                engineGoal, probeContext, Favoring.empty(),
-                settings.primaryTimeoutMS, settings.failureTimeoutMS);
-        terraformProbeGoal = navGoal;
-        Constants.LOG.info("[numen-path] 只走不改无路,探一条可改地形的路 start={} goal={}",
-                start.toShortString(), navGoal.center().toShortString());
+        probe = planner.plan(PathExecutor.playerFeet(player), start, compiled,
+                spec.withAlter(alter), RoutePlanner.MAX_ALTERNATIVES);
+        probeGoal = compiled;
+        probeAlter = alter;
+        Constants.LOG.info("[numen-path] 无路,查 alter={} 的候选路线 start={} goal={}",
+                alter, start.toShortString(), compiled.goal().center().toShortString());
         return true;
     }
 
     /**
-     * 探针出结论:有路 → 列清单,TERRAIN_BLOCKED;无路 → 连挖都到不了,NO_PATH。
-     * 等结论期间身体原地站住。裁决前仍让 caller 的 reached 谓词先说话。
+     * 查询出结论:有候选 → 记进路线簿、列清单,TERRAIN_BLOCKED;自然改动无候选 → 再查一次连要主人
+     * 同意的格也算进去的路;那也无候选 → 连挖都到不了,NO_PATH。等结论期间身体原地站住。
+     * 裁决前仍让 caller 的 reached 谓词先说话。
      */
-    private Status pollTerraformProbe() {
-        PathCalcResult result = terraformProbe.poll();
-        if (result == null) {
+    private Status pollProbe() {
+        java.util.List<RoutePlanner.Candidate> candidates = probe.poll();
+        if (candidates == null) {
             InputDriver.halt(player);
             return Status.RUNNING;
         }
-        terraformProbe = null;
-        NavGoal goal = terraformProbeGoal;
-        terraformProbeGoal = null;
+        boolean overBudget = probe.exceededBudget();
+        int cheapestChange = probe.cheapestChange();
+        PathCalcResult.Stop probeStop = probe.unreached();
+        probe = null;
+        GoalCompiler.Compiled goal = probeGoal;
+        probeGoal = null;
         if (reached.getAsBoolean()) {
             return Status.ARRIVED;
         }
-        // 搜索器交出的路径已经装配过(postProcess 在 calculate 模板里),直接读移动原语
-        NavPath path = result.getPath().orElse(null);
-        TerrainBill bill = path == null ? null : TerrainBill.planned(path, player.level());
-        if (bill == null || bill.isEmpty()) {
-            // 连可改地形都搜不出路(或搜出的路根本不动地形——那就是清洁搜索自己的预算问题):
-            // 如实说没路,别把"挖"当万能解
-            return fail(FailureType.NO_PATH, noPathAutopsy(goal,
-                    path == null ? ", not even by digging or bridging" : ""));
+        if (candidates.isEmpty() && probeAlter == RouteSpec.Alter.NATURAL
+                && submitProbe(goal, RouteSpec.Alter.ANY)) {
+            InputDriver.halt(player);
+            return Status.RUNNING;
+        }
+        if (candidates.isEmpty()) {
+            if (overBudget) {
+                return fail(FailureType.NO_PATH, noPathAutopsy(goal.goal(),
+                        ", " + TerrainBill.overBudget(spec.alterBudget(), cheapestChange), null));
+            }
+            return fail(FailureType.NO_PATH, noPathAutopsy(goal.goal(),
+                    probeStop == PathCalcResult.Stop.EXHAUSTED ? ", not even by digging or bridging" : "",
+                    TerrainBill.searchStopped(probeStop)));
+        }
+        boolean relaxed = probeAlter == RouteSpec.Alter.ANY
+                ? candidates.stream().anyMatch(c -> !c.bill().consentItems().isEmpty())
+                : candidates.stream().anyMatch(c -> !c.bill().isEmpty());
+        if (!relaxed) {
+            // 放宽一档搜出的路根本用不着放宽的那一档(不动地形、不碰要同意的格)——那是原规格
+            // 那次搜索自己的问题(预算、执行器不认账):照它停下的原因如实说,别把放宽当万能解
+            return fail(FailureType.NO_PATH, noPathAutopsy(goal.goal(), "", TerrainBill.searchStopped(cleanStop)));
+        }
+        RouteBook book = RouteBook.of(player);
+        long now = player.level().getGameTime();
+        Map<String, TerrainBill> byId = new LinkedHashMap<>();
+        for (RoutePlanner.Candidate c : candidates) {
+            RouteBook.Route route = book.add(goal, c.spec(), c.path(), c.bill(), now);
+            byId.put(route.id(), route.bill());
         }
         BlockPos feet = PathExecutor.playerFeet(player);
-        BlockPos center = goal.center();
-        // 措辞对任何任务都成立:goto 自己重发带标记,别的任务先 goto 开路再做事
-        String reason = String.format(
-                "no route without altering terrain (from %s toward %s, about %.0f blocks away). %s would %s."
-                        + " Altering terrain needs consent: if that is acceptable, goto there with"
-                        + " may_alter_terrain=true; otherwise pick another spot or ask.",
-                feet.toShortString(), center.toShortString(), Math.sqrt(feet.distSqr(center)),
-                result.getType() == PathCalcResult.Type.SUCCESS_TO_GOAL
-                        ? "The cheapest route through" : "Even the first leg of a route through",
-                bill.describe());
+        BlockPos center = goal.goal().center();
+        String reason = TerrainBill.noCleanRoute(feet, center, spec.alter().mayAlter(), cleanStop, byId);
         Constants.LOG.info("[numen-path] TERRAIN-BLOCKED start={} goal={} | {}",
                 feet.toShortString(), center.toShortString(), reason);
         return fail(FailureType.TERRAIN_BLOCKED, reason);
     }
 
     /**
-     * 空搜索结果的教学式验尸——直接喂给模型的人话:离目标多远、有无
-     * 搭路耗材、还有什么可解锁的手段。搜索器统计面未随异步句柄暴露,
-     * 此处按可得素材给结构化结论。
+     * 设了改动预算的导航先规划整条路:在飞就等,出结论后预算内的采纳为首段、超预算按无路终局。
+     * 返回 null 表示不需要等(已采纳,或起点算不出、交给正常搜索——那时预算按不限处理并记日志)。
      */
-    /** @param qualifier 紧跟 "no path to target" 之后的限定语(地形许可的说明),可为空串 */
-    private String noPathAutopsy(NavGoal goal, String qualifier) {
+    private Status planWithinBudget(GoalCompiler.Compiled compiled) {
+        if (budgetPlan == null) {
+            BlockPos start = core.pathStart();
+            if (start == null) {
+                budgetPlanned = true;
+                Constants.LOG.info("[numen-path] 起点算不出来,改动预算 {} 这次不核", spec.alterBudget());
+                return null;
+            }
+            budgetPlan = planner.plan(PathExecutor.playerFeet(player), start, compiled, spec, 1);
+        }
+        java.util.List<RoutePlanner.Candidate> planned = budgetPlan.poll();
+        if (planned == null) {
+            InputDriver.halt(player);
+            return Status.RUNNING;
+        }
+        boolean overBudget = budgetPlan.exceededBudget();
+        int cheapestChange = budgetPlan.cheapestChange();
+        PathCalcResult.Stop planStop = budgetPlan.unreached();
+        budgetPlan = null;
+        budgetPlanned = true;
+        if (reached.getAsBoolean()) {
+            return Status.ARRIVED;
+        }
+        if (planned.isEmpty()) {
+            return fail(FailureType.NO_PATH, overBudget
+                    ? noPathAutopsy(compiled.goal(),
+                            ", " + TerrainBill.overBudget(spec.alterBudget(), cheapestChange), null)
+                    : noPathAutopsy(compiled.goal(), "", TerrainBill.searchStopped(planStop)));
+        }
+        if (!planned.get(0).path().movements().isEmpty()) {
+            core.seed(compiled.engineGoal(), planned.get(0).path());
+        }
+        return null;
+    }
+
+    /**
+     * 空搜索结果的教学式验尸——直接喂给模型的人话:离目标多远、搜索为什么停(搜遍了才是没有路)、
+     * 有无搭路耗材、还有什么可解锁的手段。
+     *
+     * @param qualifier 紧跟 "found no path to target" 之后的限定语(地形许可的说明),可为空串
+     * @param why       搜索为什么停({@link TerrainBill#searchStopped});限定语已经说清原因时为 null
+     */
+    private String noPathAutopsy(NavGoal goal, String qualifier, String why) {
         BlockPos feet = PathExecutor.playerFeet(player);
         BlockPos center = goal.center();
         double dist = Math.sqrt(feet.distSqr(center));
-        StringBuilder r = new StringBuilder("no path to target").append(qualifier);
-        r.append(String.format(" (from %s toward %s, about %.0f blocks away;"
-                        + " the search burned its whole budget without finding a route",
+        StringBuilder r = new StringBuilder("found no path to target").append(qualifier);
+        r.append(String.format(" (from %s toward %s, about %.0f blocks away",
                 feet.toShortString(), center.toShortString(), dist));
+        if (why != null) {
+            r.append("; ").append(why);
+        }
         if (lastSearchContext != null && !lastSearchContext.hasThrowaway) {
             r.append("; carrying no scaffolding blocks to bridge or pillar with");
-        }
-        if (!deniedPlace.isEmpty()) {
-            r.append("; ").append(deniedPlace.size())
-                    .append(" scaffold spot(s) already proven unplaceable this navigation");
         }
         r.append(')');
         String reason = r.toString();
@@ -603,7 +741,7 @@ public final class PlayerNav {
 
     /**
      * 这次导航真挖了什么、真放了什么。任务层在 stopNav 时并进旅程账,回执末尾如实相告。
-     * PRESERVE 导航的账本通常为空(规划不出动地形的路,执行器也不会顺手动),但窒息自救
+     * 不改地形的导航账本通常为空(规划不出动地形的路,执行器也不会顺手动),但窒息自救
      * 的挖出算在内——那是反射,不是寻路决定,也该如实报。
      */
     public TerrainBill ledger() {
@@ -636,23 +774,24 @@ public final class PlayerNav {
     }
 
     /**
-     * 规划器在飞且当前无路段在执行——身体站着等异步搜索返回。任务层用它
-     * 冻结任务 deadline:deadline 度量的是身体干活的刻,搜索的墙钟延迟不该
-     * 折算成任务超时(tick 越快于真实时间,这笔折算越离谱,无上限 tick 的
-     * 测试服上足以在首次搜索返回前烧光整个预算)。
+     * 身体这一刻站着等规划,不在走:没有路段可走而本导航派出的搜索还没出结论(段搜索、候选路线查询、整路规划
+     * 都经 {@link NavSearches} 派出,只读它一处),或手上的路段为等在飞搜索的新路而站住
+     * ({@link PathExecutor#waiting})。等的是搜索的真实时间,不是走路;任务层据此不把这些刻算成干活
+     * (AbstractCompanionTask 的干活刻数与期限冻结)——tick 越快于真实时间,这笔折算越离谱,无上限 tick
+     * 的测试服上足以在首次搜索返回前烧光整个预算。只算有界的等:搜索的工作量有界,总会出结论。
      */
-    public boolean planningInFlight() {
-        return core.hasInProgressSearch() && core.getCurrent() == null;
+    public boolean waiting() {
+        PathExecutor current = core.getCurrent();
+        return current == null ? searches.waiting() : current.waiting();
     }
 
     /** 停止导航:取消在飞搜索、丢段、清键停挖,并把身体停稳、松潜行。 */
     public void stop() {
         stopped = true;
         searchSatisfied = false;
-        if (terraformProbe != null) {
-            terraformProbe.cancel();
-            terraformProbe = null;
-        }
+        probe = null;
+        budgetPlan = null;
+        searches.cancelAll();
         core.forceCancel();
         InputDriver.halt(player);
         // 垫柱逐 tick 按着潜行,路径终止时没有别人替它松——这里兜底

@@ -43,7 +43,8 @@ import java.util.function.Function;
  */
 public final class ForgeNetworkChannel implements INetworkChannel {
 
-    private static final String PROTOCOL_VERSION = "1";
+    // Consent packets and the extended body snapshot require matching clients.
+    private static final String PROTOCOL_VERSION = "2";
 
     private static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(Constants.MOD_ID, "main"),

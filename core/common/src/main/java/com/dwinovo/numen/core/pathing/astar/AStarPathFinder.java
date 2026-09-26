@@ -16,7 +16,7 @@ import static com.dwinovo.numen.core.pathing.moves.ActionCosts.COST_INF;
 
 /**
  * A* 主循环:遍历 22 个移动原语产边、favoring 修正动作成本、
- * 带最小改进阈值的松弛、chunk 边界计数与双轨墙钟超时。
+ * 带最小改进阈值的松弛、chunk 边界计数与双轨节点预算。
  */
 public final class AStarPathFinder extends AbstractNodeCostSearch {
 
@@ -47,7 +47,7 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
     }
 
     @Override
-    protected Optional<NavPath> calculate0(long primaryTimeout, long failureTimeout) {
+    protected Optional<NavPath> calculate0(int primaryNodes, int failureNodes) {
         startNode = getNodeAtPosition(startX, startY, startZ, PathNode.longHash(startX, startY, startZ));
         startNode.cost = 0;
         startNode.combinedCost = startNode.estimatedCostToGoal;
@@ -60,35 +60,39 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
             bestSoFar[i] = startNode;
         }
         MutableMoveResult res = new MutableMoveResult();
-        long startTime = System.currentTimeMillis();
-        long primaryTimeoutTime = startTime + primaryTimeout;
-        long failureTimeoutTime = startTime + failureTimeout;
-        // failing:尚无距起点 5 格以上的可用部分路径。找到之前烧满
-        // failureTimeout,找到之后只跑 primaryTimeout。
+        // failing:尚无距起点 5 格以上的可用部分路径。找到之前烧满 failureNodes,
+        // 找到之后展开到 primaryNodes 为止。预算按节点数计,为什么见 NavSettings。
         boolean failing = true;
         int numNodes = 0;
         int numEmptyChunk = 0;
         boolean isFavoring = !favoring.isEmpty();
-        int timeCheckInterval = 1 << 6;
+        // 按位置的代价表:踩(stand)叠到落点,穿(pass)叠到身体占的两格——规划查询给上一条路的
+        // 格子加价出备选就靠它;FORBID 的格早在移动原语的可站/可穿判定里排除了
+        com.dwinovo.numen.core.pathing.spec.PositionCosts positions = calcContext.spec.positions();
+        boolean hasPositional = !positions.isEmpty();
         // 循环前取样全部设置:计算中途改设置不改变本次搜索的行为
         int pathingMaxChunkBorderFetch = NavSettings.get().pathingMaxChunkBorderFetch;
         double minimumImprovement = NavSettings.get().minimumImprovementRepropagation ? MIN_IMPROVEMENT : 0;
-        // 节点硬上限:与时间预算同为循环出口,谁先到谁停。命中后落到下方 bestSoFar(...) 返回,
-        // 与超时收尾完全一致(有可用半程即 SEGMENT,否则 FAILURE)。见 NavSettings#maxNodesPerSearch。
-        int maxNodes = NavSettings.get().maxNodesPerSearch;
         Moves[] allMoves = Moves.values();
-        while (!openSet.isEmpty() && numNodes < maxNodes && numEmptyChunk < pathingMaxChunkBorderFetch && !cancelRequested) {
-            if ((numNodes & (timeCheckInterval - 1)) == 0) { // 每 64 节点查一次墙钟(约半毫秒)
-                long now = System.currentTimeMillis();
-                if (now - failureTimeoutTime >= 0 || (!failing && now - primaryTimeoutTime >= 0)) {
-                    break;
-                }
-            }
+        // 预算用完即停,落到下方 bestSoFar(...):有可用半程即 SEGMENT,否则 FAILURE
+        while (!openSet.isEmpty() && numNodes < failureNodes && (failing || numNodes < primaryNodes)
+                && numEmptyChunk < pathingMaxChunkBorderFetch && !cancelRequested) {
             PathNode currentNode = openSet.removeLowest();
             mostRecentConsidered = currentNode;
             numNodes++;
             if (goal.isInGoal(currentNode.x, currentNode.y, currentNode.z)) {
-                return Optional.of(new Path(realStart, startNode, currentNode, numNodes, goal, calcContext));
+                // 到达价:停在这一格还要再付的价钱。出堆时的键只是乐观下界,把到达价补上放回堆里,
+                // 等它按总价再次出堆才收——更便宜的终点(近处野树之于远处主人的原木)先出堆就先收。
+                // 放回去的同时照常往外展开:终点格也是过路格,起点落在一块贵的站位里时,
+                // 不展开就一步也走不出去,只能收下起点。
+                double total = currentNode.cost
+                        + goal.arrivalCost(currentNode.x, currentNode.y, currentNode.z);
+                if (total > currentNode.combinedCost) {
+                    currentNode.combinedCost = total;
+                    openSet.insert(currentNode);
+                } else {
+                    return Optional.of(new Path(realStart, startNode, currentNode, numNodes, goal, calcContext));
+                }
             }
             for (Moves moves : allMoves) {
                 int newX = currentNode.x + moves.xOffset;
@@ -139,10 +143,30 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
                     // 折扣乘在动作成本上,按目的格哈希
                     actionCost *= favoring.calculate(hashCode);
                 }
+                if (hasPositional) {
+                    // 踩叠在落点(脚下那格);穿叠在身体经过的每一格——落点的脚与头,斜走时再加两个切角柱的
+                    // 脚与头。与 CellClass 里硬禁的口径一致:那边对每个身体格都查 pass(斜走的切角也查),
+                    // 软代价只算落点就拦不住身体擦过去——一格头高的工地格拦不住她从下面钻,斜走绕墙角时
+                    // 她的中心正好擦过角上那格,走得稍偏一点就站进了图纸格。
+                    long feet = BlockPos.asLong(res.x, res.y, res.z);
+                    long head = BlockPos.asLong(res.x, res.y + 1, res.z);
+                    actionCost += positions.stand(feet) + positions.pass(feet) + positions.pass(head);
+                    if (moves.xOffset != 0 && moves.zOffset != 0 && !moves.dynamicXZ) {
+                        int y = currentNode.y;
+                        actionCost += positions.pass(BlockPos.asLong(currentNode.x, y, res.z))
+                                + positions.pass(BlockPos.asLong(currentNode.x, y + 1, res.z))
+                                + positions.pass(BlockPos.asLong(res.x, y, currentNode.z))
+                                + positions.pass(BlockPos.asLong(res.x, y + 1, currentNode.z));
+                    }
+                }
                 PathNode neighbor = getNodeAtPosition(res.x, res.y, res.z, hashCode);
                 double tentativeCost = currentNode.cost + actionCost;
                 if (neighbor.cost - tentativeCost > minimumImprovement) {
                     neighbor.previous = currentNode;
+                    // 这条边是哪个原语走出来的、原价多少,就在这里记下——装配路径时直接取,
+                    // 不必再拿落点去猜(猜就是同一件事的第二处说法)
+                    neighbor.previousMove = moves;
+                    neighbor.previousMoveCost = res.cost;
                     neighbor.cost = tentativeCost;
                     neighbor.combinedCost = tentativeCost + neighbor.estimatedCostToGoal;
                     if (neighbor.isOpen()) {
@@ -166,17 +190,18 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
         if (cancelRequested) {
             return Optional.empty();
         }
+        // 为什么停,随结论交出去(PathCalcResult.Stop):开放集空了是走得到的都搜过了——但半路有伸进
+        // 没加载区块的边被跳过时,那边还没搜,只能算不知道;撞够了没加载的区块边界同理;
+        // 否则是节点预算用完(已有可用半程时按 primaryNodes,之前按 failureNodes)。
+        stop = numEmptyChunk >= pathingMaxChunkBorderFetch ? PathCalcResult.Stop.UNLOADED
+                : openSet.isEmpty()
+                        ? (numEmptyChunk > 0 ? PathCalcResult.Stop.UNLOADED : PathCalcResult.Stop.EXHAUSTED)
+                        : PathCalcResult.Stop.BUDGET;
         if (NavSettings.get().profile) {
-            // Why did the loop stop? nodeCap = hit maxNodesPerSearch (gave up early — cap may be too low
-            // for this terrain); exhausted = openSet emptied (genuinely no reachable path); timeout = time
-            // budget; chunkBorder = ran into unloaded chunks. failing=true means no usable partial found
-            // (this returns a FAILURE); failing=false means a best partial segment is returned.
-            String reason = numNodes >= maxNodes ? "nodeCap"
-                    : numEmptyChunk >= pathingMaxChunkBorderFetch ? "chunkBorder"
-                    : openSet.isEmpty() ? "exhausted"
-                    : "timeout";
-            Constants.LOG.info("[nav-search] stop reason={} nodes={}/{} failing={} goal={}",
-                    reason, numNodes, maxNodes, failing, goal);
+            // failing=true means no usable partial found (this returns a FAILURE); failing=false means a
+            // best partial segment is returned.
+            Constants.LOG.info("[nav-search] stop reason={} nodes={} (primary {}, failure {}) failing={} goal={}",
+                    stop, numNodes, primaryNodes, failureNodes, failing, goal);
         }
         return bestSoFar(true, numNodes);
     }

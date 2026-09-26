@@ -19,11 +19,27 @@ public final class PathNode {
     /** 起点到此的实际成本,初始 INF,由搜索循环松弛改写。 */
     public double cost;
 
-    /** 恒等于 cost + estimatedCostToGoal,堆按它排序。 */
+    /** cost + estimatedCostToGoal,堆按它排序;目标格出堆时补上到达价({@code Goal#arrivalCost})再放回。 */
     public double combinedCost;
 
     /** 松弛出本节点成本的前驱。 */
     public PathNode previous;
+
+    /**
+     * 走到本节点用的那个移动原语,与 {@link #previous} 成对。
+     *
+     * <p>搜索展开这条边时就知道是哪个原语,记下来,装配路径时直接取——不记的话装配只能
+     * 枚举全部原语、拿落点去猜哪个是它,那就成了同一件事的第二处说法。起点没有入边,为 null。
+     */
+    public com.dwinovo.numen.core.pathing.moves.Moves previousMove;
+
+    /**
+     * 那条边的动作价,<b>搜索算出来的原价</b>(未叠 favoring 折扣、未加站位价)。
+     *
+     * <p>执行期拿它当"这个动作比规划时贵了多少"的基准,而执行期重算出来的也是原价,
+     * 两边同口径才比得了。叠过折扣的 g 值差不是这个数。
+     */
+    public double previousMoveCost;
 
     /** 在二叉堆数组里的下标;-1 表示不在 open set(decrease-key 用)。 */
     public int heapPosition;
